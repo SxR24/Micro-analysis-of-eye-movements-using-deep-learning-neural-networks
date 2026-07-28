@@ -1,0 +1,16 @@
+# Core pipeline
+numpy
+opencv-python
+pandas
+
+# RITnet inference (stage 2 only). Install the build matching your CUDA
+# version from pytorch.org if you have a GPU; CPU works but is slow.
+torch
+
+# Analysis and figures
+scipy
+matplotlib
+
+# Review app (stage 7)
+streamlit
+altair

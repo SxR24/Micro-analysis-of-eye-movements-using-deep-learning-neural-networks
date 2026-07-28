@@ -1,0 +1,62 @@
+# ----------------------------------------------------------------------
+# Data. None of this belongs in version control -- the working tree is
+# ~27 GB, dominated by source video and derived frames.
+#
+# Everything under data/ is either an input you already hold, or is
+# reproducible from those inputs with the commands in README.md.
+# ----------------------------------------------------------------------
+data/
+_archive/
+
+# Source video anywhere
+*.avi
+*.mp4
+*.mov
+*.mkv
+
+# Derived per-frame artefacts
+frames_*/
+out_*/
+*.npz
+
+# ----------------------------------------------------------------------
+# Results.
+# Commented out deliberately: the CSVs are a few MB and are the actual
+# findings, so you may WANT them tracked for the write-up. Uncomment to
+# exclude them.
+# ----------------------------------------------------------------------
+# *.csv
+
+# ----------------------------------------------------------------------
+# Python
+# ----------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# ----------------------------------------------------------------------
+# Editors / OS
+# ----------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----------------------------------------------------------------------
+# Scratch
+# ----------------------------------------------------------------------
+live_view_frame_*.png
+*.log
+.Rhistory
+
+# A running Streamlit server holds src/review/app.py open and can drop a stale
+# copy back at the repo root. The real file lives in src/review/.
+/app.py
