@@ -12,9 +12,8 @@ Usage:
     python run_metrics_chunked.py --masks ../out_8_full/mask \
         --out ../ritnet_8_new.csv --seconds 35
 """
-import os, sys, csv, time, argparse, importlib.util
+import os, csv, time, argparse, importlib.util
 import numpy as np
-import cv2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location(
@@ -22,41 +21,10 @@ spec = importlib.util.spec_from_file_location(
 rm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rm)
 
-COLS = ["frame", "pupil_found", "pupil_x", "pupil_y", "pupil_major",
-        "pupil_minor", "pupil_angle", "pupil_diam", "iris_found",
-        "iris_x", "iris_y", "iris_major", "iris_minor", "iris_diam",
-        "iris_area_diam"]
-
-
-def measure(path):
-    bgr = cv2.imread(path, cv2.IMREAD_COLOR)
-    if bgr is None:
-        return None
-    b, g, r = bgr[:, :, 0], bgr[:, :, 1], bgr[:, :, 2]
-    pupil = ((r > 128) & (g < 100) & (b < 100)).astype(np.uint8)
-    iris = ((b > 128) & (r < 100) & (g < 100)).astype(np.uint8)
-
-    pm = rm.fit_region(pupil)
-    im = rm.fit_iris((iris | pupil).astype(np.uint8), pm)
-
-    row = {}
-    if pm:
-        row.update(pupil_found=1, pupil_x=pm["x"], pupil_y=pm["y"],
-                   pupil_major=pm["major"], pupil_minor=pm["minor"],
-                   pupil_angle=pm["angle"], pupil_diam=pm["diam"])
-    else:
-        row.update(pupil_found=0, pupil_x=np.nan, pupil_y=np.nan,
-                   pupil_major=np.nan, pupil_minor=np.nan,
-                   pupil_angle=np.nan, pupil_diam=np.nan)
-    if im:
-        row.update(iris_found=1, iris_x=im["x"], iris_y=im["y"],
-                   iris_major=im["major"], iris_minor=im["minor"],
-                   iris_diam=im["diam"], iris_area_diam=im["area_diam"])
-    else:
-        row.update(iris_found=0, iris_x=np.nan, iris_y=np.nan,
-                   iris_major=np.nan, iris_minor=np.nan, iris_diam=np.nan,
-                   iris_area_diam=np.nan)
-    return row
+# Columns and measurement both come from ritnet_metrices, so a batch run and a
+# resumed run cannot produce different numbers from the same masks.
+COLS = rm.COLS
+measure = rm.measure_mask
 
 
 def main():

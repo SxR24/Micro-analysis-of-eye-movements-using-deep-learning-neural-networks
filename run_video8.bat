@@ -19,10 +19,12 @@ echo.
 echo ============================================================
 echo  STAGE 1/3  torsion tracking  (~15 min)
 echo ============================================================
-echo  Check these four lines appear before walking away:
+echo  Check these lines appear before walking away:
 echo    "RITnet coords -^> original space: ..."   (--meta took effect)
 echo    "Feature gating: RITnet iris mask"        (lashes excluded)
 echo    "Blink recovery window: 21 frames"        (420 ms window)
+echo    "Tracking: reference-anchored LK"         (no accumulating slide)
+echo    "Estimator: procrustes + Tukey IRLS"      (radius-weighted, robust)
 echo    "Capturing raw feature trajectories"      (npz export on)
 echo.
 python src/irisometry/ocular.py %VIDEO% --aoi %AOI% --ritnet %VDIR%\ritnet_8.csv --meta %META% --masks %VDIR%\masks --out %VDIR%
@@ -37,7 +39,19 @@ if errorlevel 1 goto :failed
 
 echo.
 echo ============================================================
-echo  STAGE 3/3  before/after comparison
+echo  STAGE 3/4  reliability check
+echo ============================================================
+echo  How much of the torsion signal is real? Split-half over the
+echo  tracked features. Watch two lines:
+echo    "reliability (S-B)"     higher is better
+echo    "growth across seg"     ~1.0 = reference anchoring holding
+echo.
+python src/analysis/reliability.py --features %VDIR%\features_8.npz --baseline %VDIR%\baseline_lkchain\features_8_LKCHAIN.npz
+if errorlevel 1 goto :failed
+
+echo.
+echo ============================================================
+echo  STAGE 4/4  before/after comparison
 echo ============================================================
 echo --- vs the ORIGINAL pre-fix run ---
 python src/irisometry/compare_runs.py --before %VDIR%\baseline_prefix\ocular_8_BEFORE.csv --after %VDIR%\ocular_8.csv --ritnet %VDIR%\ritnet_8.csv --out %VDIR%\comparison_vs_prefix

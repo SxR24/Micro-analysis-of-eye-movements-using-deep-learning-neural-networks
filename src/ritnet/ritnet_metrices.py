@@ -172,6 +172,64 @@ def fit_iris(disc_mask, pupil, min_area=15, widest_frac=0.10):
                 area_diam=2.0 * np.sqrt(area / np.pi), cy_src=cy_src)
 
 
+COLS = ["frame", "pupil_found", "pupil_x", "pupil_y", "pupil_major",
+        "pupil_minor", "pupil_angle", "pupil_diam", "iris_found",
+        "iris_x", "iris_y", "iris_major", "iris_minor", "iris_diam",
+        "iris_area_diam"]
+
+
+def class_masks(bgr):
+    """Split a RITnet colour mask into pupil and iris binary masks.
+
+    Single definition of the palette thresholds. run_metrics_chunked.py used to
+    carry its own copy; two copies of the class decision is exactly the kind of
+    thing that silently diverges when the palette changes.
+    """
+    b, g, r = bgr[:, :, 0], bgr[:, :, 1], bgr[:, :, 2]
+    pupil = (r > 128) & (g < 100) & (b < 100)      # red
+    iris = (b > 128) & (r < 100) & (g < 100)       # blue
+    return pupil, iris
+
+
+def measure_mask(path_or_bgr, min_area=15):
+    """Full per-frame measurement of one mask image. Returns a row dict without
+    the `frame` key, or None if the image could not be read.
+
+    This is the single implementation used by both the batch driver (main) and
+    the resumable chunked driver.
+    """
+    bgr = (cv2.imread(path_or_bgr, cv2.IMREAD_COLOR)
+           if isinstance(path_or_bgr, str) else path_or_bgr)
+    if bgr is None:
+        return None
+
+    pupil, iris = class_masks(bgr)
+    pm = fit_region(pupil, min_area)
+    # The iris is measured on the FULL disc: the blue annulus plus the red pupil
+    # that sits inside it. Measuring blue alone under-reports the iris, because
+    # the pupil is a hole in that region.
+    im = fit_iris(iris | pupil, pm, min_area)
+
+    row = {}
+    if pm:
+        row.update(pupil_found=1, pupil_x=pm["x"], pupil_y=pm["y"],
+                   pupil_major=pm["major"], pupil_minor=pm["minor"],
+                   pupil_angle=pm["angle"], pupil_diam=pm["diam"])
+    else:
+        row.update(pupil_found=0, pupil_x=np.nan, pupil_y=np.nan,
+                   pupil_major=np.nan, pupil_minor=np.nan,
+                   pupil_angle=np.nan, pupil_diam=np.nan)
+    if im:
+        row.update(iris_found=1, iris_x=im["x"], iris_y=im["y"],
+                   iris_major=im["major"], iris_minor=im["minor"],
+                   iris_diam=im["diam"], iris_area_diam=im["area_diam"])
+    else:
+        row.update(iris_found=0, iris_x=np.nan, iris_y=np.nan,
+                   iris_major=np.nan, iris_minor=np.nan, iris_diam=np.nan,
+                   iris_area_diam=np.nan)
+    return row
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--masks", required=True, help="folder of RITnet mask PNGs")
@@ -193,46 +251,14 @@ def main():
 
     rows = []
     for f in files:
-        bgr = cv2.imread(f, cv2.IMREAD_COLOR)          # OpenCV reads as BGR
-        if bgr is None:
+        row = measure_mask(f, args.min_area)
+        if row is None:
             continue
-        b, g, r = bgr[:, :, 0], bgr[:, :, 1], bgr[:, :, 2]
-
-        # color -> class binary masks (allow slight tolerance from jpg artifacts)
-        pupil = (r > 128) & (g < 100) & (b < 100)      # red
-        iris  = (b > 128) & (r < 100) & (g < 100)      # blue
-
-        pm = fit_region(pupil, args.min_area)
-        # The iris is measured on the FULL disc: the blue annulus plus the red
-        # pupil that sits inside it. Measuring blue alone under-reports the
-        # iris because the pupil is a hole in that region.
-        im = fit_iris(iris | pupil, pm, args.min_area)
-
-        row = {"frame": _frame_index(f)}
-        if pm:
-            row.update(pupil_found=1, pupil_x=pm["x"], pupil_y=pm["y"],
-                       pupil_major=pm["major"], pupil_minor=pm["minor"],
-                       pupil_angle=pm["angle"], pupil_diam=pm["diam"])
-        else:
-            row.update(pupil_found=0, pupil_x=np.nan, pupil_y=np.nan,
-                       pupil_major=np.nan, pupil_minor=np.nan,
-                       pupil_angle=np.nan, pupil_diam=np.nan)
-        if im:
-            row.update(iris_found=1, iris_x=im["x"], iris_y=im["y"],
-                       iris_major=im["major"], iris_minor=im["minor"],
-                       iris_diam=im["diam"], iris_area_diam=im["area_diam"])
-        else:
-            row.update(iris_found=0, iris_x=np.nan, iris_y=np.nan,
-                       iris_major=np.nan, iris_minor=np.nan, iris_diam=np.nan,
-                       iris_area_diam=np.nan)
+        row["frame"] = _frame_index(f)
         rows.append(row)
 
-    cols = ["frame", "pupil_found", "pupil_x", "pupil_y", "pupil_major",
-            "pupil_minor", "pupil_angle", "pupil_diam", "iris_found",
-            "iris_x", "iris_y", "iris_major", "iris_minor", "iris_diam",
-            "iris_area_diam"]
     with open(args.out, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=cols)
+        w = csv.DictWriter(fh, fieldnames=COLS)
         w.writeheader()
         for row in rows:
             w.writerow(row)

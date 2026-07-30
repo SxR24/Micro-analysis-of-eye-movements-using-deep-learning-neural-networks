@@ -61,9 +61,17 @@ def main():
         fidx += 1
     cap.release()
 
+    # inner_width/inner_height record the EXACT size of the scaled image inside
+    # the canvas. pad_x = (W - nw) // 2, so when (W - nw) is odd the right pad is
+    # one pixel wider than the left; anything that inverts the letterbox by
+    # assuming symmetric padding is then off by a pixel. Recording nw/nh removes
+    # the guesswork downstream (see ocular.iris_to_original).
     meta = dict(video=os.path.abspath(args.video), original_width=ow,
                 original_height=oh, mode="shrink", fill=args.fill,
-                scale=scale, pad_x=px, pad_y=py, fps=fps, n_frames_saved=out_id)
+                scale=scale, pad_x=px, pad_y=py,
+                inner_width=nw, inner_height=nh,
+                canvas_width=args.width, canvas_height=args.height,
+                fps=fps, n_frames_saved=out_id)
     with open(os.path.join(args.out, "_frames_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
     print("saved %d frames. map mask->orig: x=(mx-%d)/%.4f y=(my-%d)/%.4f"

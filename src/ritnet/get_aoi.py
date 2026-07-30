@@ -19,8 +19,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ritnet", required=True, help="RITnet metrics CSV")
     ap.add_argument("--meta", required=True, help="_frames_meta.json from extraction")
-    ap.add_argument("--n", type=int, default=30,
-                    help="use the first N valid frames to estimate the AOI")
+    ap.add_argument("--n", type=int, default=0,
+                    help="use only the first N valid frames (0 = use the whole "
+                         "recording, which is the default and what you want)")
+    ap.add_argument("--pad", type=float, default=1.0,
+                    help="multiply the estimated radius by this before use")
     args = ap.parse_args()
 
     with open(args.meta) as f:
@@ -50,16 +53,36 @@ def main():
             ox, oy = to_orig(ix, iy)
             xs.append(ox); ys.append(oy)
             rs.append((idiam / 2.0) / sx)   # radius scaled to original space
-            if len(xs) >= args.n:
+            if args.n and len(xs) >= args.n:
                 break
 
     if not xs:
         print("No valid iris detections found in", args.ritnet)
         return
 
-    cx = float(np.median(xs)); cy = float(np.median(ys)); r = float(np.median(rs))
-    print("Estimated AOI in ORIGINAL video coordinates (from %d frames):" % len(xs))
+    xs = np.asarray(xs); ys = np.asarray(ys); rs = np.asarray(rs)
+
+    # The AOI is locked for the whole run, so a bad estimate contaminates every
+    # frame. Estimating from the first N frames gambles the recording on how the
+    # video happens to open. Use all of it, trimmed to frames whose iris diameter
+    # is near the modal value so partially-occluded frames drop out.
+    keep = np.ones(len(rs), bool)
+    if len(rs) > 50:
+        med_r = float(np.median(rs))
+        mad_r = float(np.median(np.abs(rs - med_r))) + 1e-9
+        keep = np.abs(rs - med_r) < 3.0 * 1.4826 * mad_r
+
+    cx = float(np.median(xs[keep]))
+    cy = float(np.median(ys[keep]))
+    r = float(np.median(rs[keep])) * args.pad
+
+    print("Estimated AOI in ORIGINAL video coordinates")
+    print("  frames with a confident iris   %d" % len(xs))
+    print("  kept after diameter trimming   %d" % int(keep.sum()))
     print("  centre = (%.0f, %.0f)   radius = %.0f" % (cx, cy, r))
+    print("  centre spread (IQR)  x %.1f px   y %.1f px"
+          % (np.subtract(*np.percentile(xs[keep], [75, 25])),
+             np.subtract(*np.percentile(ys[keep], [75, 25]))))
     print()
     print("Use with ocular.py:")
     print('  --aoi %.0f,%.0f,%.0f' % (cx, cy, r))

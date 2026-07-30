@@ -12,15 +12,16 @@ from eye videos. It consolidates:
       - it keeps the RAW per-feature trajectories, so anything can be derived
         downstream (the MATLAB version discards them)
   * the TORSION derivation that NEITHER original computes directly:
-      - centroid re-centring (removes gaze/translation) + circular-median of
-        per-feature angular change about the centroid  -> degrees of torsion
-      - blink-segmented and re-referenced after every blink (documented property)
+      - centroid re-centring (removes gaze/translation), then a robust
+        least-squares rigid rotation from the segment reference -> degrees
+      - segmented and re-referenced at every blink and re-seed
   * a hook for RITnet (deep-learning segmentation) to supply pupil/iris and
     the blink signal when available, replacing the classical front-end.
 
 OUTPUT: a single per-frame CSV with everything aligned on frame index:
     frame, time, pupil_x, pupil_y, pupil_radius, pupil_fit_err,
-    n_features, blink, torsion_deg, torsion_inner_deg, torsion_outer_deg
+    n_features, blink, torsion_deg, torsion_inner_deg, torsion_outer_deg,
+    torsion_resid_px, torsion_n_used, seg
 
 Plus an optional quick-look PNG and an optional annotated overlay video.
 
@@ -31,10 +32,14 @@ Design notes
   + ellipse fit + residual) that mirrors the MATLAB starburst's PURPOSE (locate
   pupil, quantify fit quality for blink detection) without cloning its every line.
   If RITnet masks are supplied, they override this and are used instead.
+- Features are tracked from the segment's reference IMAGE each frame rather than
+  chained frame to frame, so correspondence error cannot accumulate. See
+  track_from_reference.
 - The torsion math is validated against synthetic known rotations (see __main__
-  self-test): a known N-degree rotation under arbitrary translation recovers N.
+  self-test): a known N-degree rotation under arbitrary translation recovers N,
+  under asymmetric feature dropout, and with up to 30% of features mis-tracked.
 
-Author: (your name), MSc Bioinformatics & CS, University of Leicester
+Sohil Ananth, MSc Bioinformatics & CS, University of Leicester
 """
 
 import os
@@ -42,7 +47,6 @@ import sys
 import csv
 import json
 import math
-import pickle
 import argparse
 import numpy as np
 import cv2
@@ -103,8 +107,42 @@ class Config:
     pupil_radius_range = (15, 160)
 
     # --- Lucas-Kanade params ---
+    # Tracking measures the full reference->current displacement, not a one-frame
+    # increment, so it needs more pyramid levels and a looser consistency limit
+    # than frame-to-frame chaining would. At fb_max_px = 1.0 good features were
+    # retired within a few frames and segments collapsed to a median of 4.5.
     lk_win = (15, 15)
-    lk_levels = 2
+    lk_levels = 4
+    fb_max_px = 2.0              # forward-backward limit, reference <-> current
+
+    # --- reference anchoring (see track_from_reference) ---
+    # Chaining LK frame to frame let correspondence error accumulate: on video 8
+    # the median residual to a best-fit rigid rotation grew from 1.98 px at the
+    # start of a segment to 10.34 px at the end. Anchoring on the reference image
+    # instead holds it flat.
+    anchor_on_reference = True
+
+    # A lost correspondence stays lost. Validity used to be recomputed each frame,
+    # so a feature failing at frame k could re-enter at k+1 with a stale position.
+    # Retirement needs sustained failure: one blurred or saccadic frame should not
+    # cull a good feature permanently.
+    sticky_validity = True
+    retire_after = 3             # consecutive failures before retiring
+
+    # Start a new segment when the surviving set drops below this fraction of the
+    # seeded count (or reseed_min, whichever is larger). A re-seed is not a blink:
+    # it resets the torsion reference without implying the eye closed.
+    reseed_frac = 0.25
+    reseed_min = 25
+
+    # --- torsion estimator ---
+    # 'procrustes': closed-form least-squares rigid rotation, Tukey-reweighted.
+    #   Optimal under isotropic Gaussian position noise and implicitly r^2
+    #   weighted, which matches angular precision scaling with radius.
+    # 'median': the earlier circular-median-of-angles, kept for comparison.
+    torsion_estimator = "procrustes"
+    tukey_c = 4.685              # biweight tuning constant (95% efficiency)
+    irls_iters = 5
 
     # --- output ---
     # Write the RAW per-feature trajectories alongside the CSV. The CSV only
@@ -139,6 +177,96 @@ def circular_median_deg(delta_theta_rad):
     if d.size == 0:
         return np.nan
     return float(np.degrees(np.median(wrap_to_pi(d))))
+
+
+def procrustes_rotation(ref, cur, tukey_c=4.685, iters=5):
+    """Least-squares rigid rotation taking `ref` onto `cur`, robustly.
+
+    The orthogonal Procrustes solution, in closed form:
+
+        theta = atan2( sum_i w_i (a_i x b_i),  sum_i w_i (a_i . b_i) )
+
+    with a_i, b_i the centroid-referred reference and current positions.
+    Preferred to a circular median of per-feature angles because a feature at
+    radius r pins the angle to a precision of sigma_pos / r, so outer features
+    are more informative; Procrustes is implicitly r^2-weighted, the median is
+    not. Tukey reweighting stops a few mis-tracked features dragging the fit.
+
+    Parameters
+    ----------
+    ref, cur : (N, 2) arrays restricted to valid features. Not pre-centred --
+               centring here is what removes the gaze translation.
+
+    Returns
+    -------
+    theta_deg : rotation in degrees, positive counter-clockwise in image axes
+    resid_px  : median per-feature residual to the fitted rotation. Per-frame
+                quality channel: high values mean the tracked set is not moving
+                as a rigid body, however smooth the trace looks.
+    n_used    : features retaining non-negligible weight
+    """
+    if len(ref) < 3:
+        return np.nan, np.nan, 0
+    a = ref - ref.mean(axis=0)
+    b = cur - cur.mean(axis=0)
+
+    w = np.ones(len(a))
+    theta = 0.0
+    for it in range(max(1, iters)):
+        S = float((w * (a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])).sum())
+        C = float((w * (a[:, 0] * b[:, 0] + a[:, 1] * b[:, 1])).sum())
+        if S == 0.0 and C == 0.0:
+            return np.nan, np.nan, 0
+        theta = math.atan2(S, C)
+
+        R = np.array([[math.cos(theta), -math.sin(theta)],
+                      [math.sin(theta), math.cos(theta)]])
+        resid = np.linalg.norm(b - a @ R.T, axis=1)
+        if it == iters - 1:
+            break
+        # Tukey biweight on the MAD-scaled residual
+        s = 1.4826 * float(np.median(resid)) + 1e-9
+        u = resid / (tukey_c * s)
+        w_new = np.where(u < 1.0, (1.0 - u * u) ** 2, 0.0)
+        if w_new.sum() < 3:      # over-trimmed; keep the previous weights
+            break
+        w = w_new
+
+    R = np.array([[math.cos(theta), -math.sin(theta)],
+                  [math.sin(theta), math.cos(theta)]])
+    resid = np.linalg.norm(b - a @ R.T, axis=1)
+    return (float(np.degrees(theta)),
+            float(np.median(resid)),
+            int((w > 1e-6).sum()))
+
+
+def track_from_reference(ref_gray, cur_gray, ref_pts, guess_pts, lk_params,
+                         fb_max_px=1.0):
+    """Track reference features into the current frame, anchored on the reference.
+
+    LK runs directly from the reference image to the current one; `guess_pts`
+    (the previous frame's result) only seeds the search, so a poor guess costs
+    iterations rather than accuracy. Chaining instead carries each hop's
+    correspondence error into the next, which accumulates over a segment.
+
+    The forward-backward check is also against the reference, which is stricter
+    than the one-frame version: a feature that has slid away over fifty frames
+    fails to map back onto its reference position and is caught.
+
+    Returns (pts Nx2 float32, ok bool N).
+    """
+    p_ref = np.ascontiguousarray(ref_pts.reshape(-1, 1, 2).astype(np.float32))
+    p_guess = np.ascontiguousarray(guess_pts.reshape(-1, 1, 2).astype(np.float32))
+
+    p1, st, _ = cv2.calcOpticalFlowPyrLK(
+        ref_gray, cur_gray, p_ref, p_guess,
+        flags=cv2.OPTFLOW_USE_INITIAL_FLOW, **lk_params)
+    p0r, st_b, _ = cv2.calcOpticalFlowPyrLK(
+        cur_gray, ref_gray, p1, None, **lk_params)
+
+    fb = np.abs(p_ref - p0r).reshape(-1, 2).max(axis=1)
+    ok = (st.reshape(-1) == 1) & (st_b.reshape(-1) == 1) & (fb < fb_max_px)
+    return p1.reshape(-1, 2), ok
 
 
 # ======================================================================
@@ -268,7 +396,8 @@ def detect_features(gray, aoi, cfg, iris_mask=None):
     return pts, False
 
 
-def load_iris_mask(mask_dir, fidx, shape, scale, pad_x, pad_y, erode_px):
+def load_iris_mask(mask_dir, fidx, shape, scale, pad_x, pad_y, erode_px,
+                   inner_wh=None):
     """RITnet iris mask for one frame, mapped into ORIGINAL video coordinates.
 
     Uses iris (blue) ONLY -- not the pupil -- so features cannot land on the
@@ -288,16 +417,29 @@ def load_iris_mask(mask_dir, fidx, shape, scale, pad_x, pad_y, erode_px):
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
                                       (2 * erode_px + 1, 2 * erode_px + 1))
         iris = cv2.erode(iris, k)
-    if iris.sum() == 0:
-        return iris_to_original(iris, shape, scale, pad_x, pad_y)
-    return iris_to_original(iris, shape, scale, pad_x, pad_y)
+    return iris_to_original(iris, shape, scale, pad_x, pad_y, inner_wh)
 
 
-def iris_to_original(mask, shape, scale, pad_x, pad_y):
-    """Undo the letterbox: crop the padding, then resize to the original frame."""
+def iris_to_original(mask, shape, scale, pad_x, pad_y, inner_wh=None):
+    """Undo the letterbox: crop the padding, then resize to the original frame.
+
+    PADDING IS NOT SYMMETRIC. frame_shrink.py computes pad_x = (W - nw) // 2, so
+    when (W - nw) is odd the RIGHT pad is one pixel wider than the left. Cropping
+    as [pad : w - pad] therefore keeps one column of padding on the right and
+    shifts every mapped coordinate by a fraction of a pixel. Video 8 happens to
+    have even margins; a different capture resolution would not.
+
+    `inner_wh` is the exact (new_w, new_h) written at extraction. When present it
+    is used directly and the symmetry assumption disappears. It is optional so
+    that meta files written before this fix still load.
+    """
     h, w = mask.shape[:2]
     x0, y0 = int(round(pad_x)), int(round(pad_y))
-    x1, y1 = w - x0, h - y0
+    if inner_wh is not None:
+        x1, y1 = x0 + int(inner_wh[0]), y0 + int(inner_wh[1])
+    else:
+        x1, y1 = w - x0, h - y0
+    x1, y1 = min(x1, w), min(y1, h)
     if x1 <= x0 or y1 <= y0:
         core = mask
     else:
@@ -350,7 +492,7 @@ class OcularPipeline:
         # ---- iris-mask gating -------------------------------------------
         # Constrain features to RITnet's iris class instead of a bare circle.
         # See detect_features() for why this matters.
-        mask_scale = mask_pad_x = mask_pad_y = None
+        mask_scale = mask_pad_x = mask_pad_y = mask_inner = None
         if mask_dir:
             if not os.path.isdir(mask_dir):
                 sys.exit("Mask folder not found: " + mask_dir)
@@ -360,6 +502,10 @@ class OcularPipeline:
             mask_scale = float(_m.get("scale", 1.0))
             mask_pad_x = float(_m.get("pad_x", 0.0))
             mask_pad_y = float(_m.get("pad_y", 0.0))
+            # exact inner size, when the extraction recorded it -- avoids the
+            # symmetric-padding assumption in iris_to_original
+            mask_inner = ((_m["inner_width"], _m["inner_height"])
+                          if "inner_width" in _m else None)
             print("Feature gating: RITnet iris mask (erode %d px) from %s"
                   % (cfg.mask_erode_px, mask_dir))
         else:
@@ -373,17 +519,32 @@ class OcularPipeline:
         print("Blink recovery window: %d frames (%.0f ms)"
               % (wait_frames, 1000.0 * wait_frames / fps))
 
+        print("Tracking: %s" % ("reference-anchored LK (%d pyramid levels, "
+                                "fb<%.1f px)" % (cfg.lk_levels, cfg.fb_max_px)
+                                if cfg.anchor_on_reference
+                                else "frame-to-frame LK chaining (legacy)"))
+        print("Estimator: %s%s"
+              % (cfg.torsion_estimator,
+                 " + Tukey IRLS" if cfg.torsion_estimator == "procrustes" else ""))
+        print("Feature validity: %s"
+              % ("sticky (retired after %d consecutive failures)"
+                 % cfg.retire_after if cfg.sticky_validity
+                 else "re-evaluated each frame (legacy)"))
+
         # per-frame records
         rows = []                  # dict per analysed frame
-        feat_prev = None           # tracked points from previous frame (Nx2)
-        ref_theta = None           # marks whether a segment reference exists
+        feat_prev = None           # last frame's tracked positions (Nx2); with
+                                   # reference anchoring these are only the LK
+                                   # initial guess, never the measurement basis
+        ref_gray = None            # REFERENCE IMAGE for the current segment --
+                                   # the intensity anchor that stops drift
         ref_pts = None             # reference POSITIONS for the current segment
-        ref_r = None               # reference radii (for inner/outer split)
+        ref_r = None               # reference radii about the LOCKED AOI centre,
+                                   # fixed at seed time so a feature keeps its
+                                   # inner/outer ring for the whole segment
+        alive = None               # sticky per-feature validity (bool N)
+        n_seeded = 0
         prev_gray = None
-
-        writer = None
-        if cfg.save_overlay_video:
-            fourcc = cv2.VideoWriter_fourcc(*"MJPG")
 
         # ---- raw per-feature trajectory capture ----------------------------
         # Slot i is the SAME physical feature only within one inter-blink
@@ -397,6 +558,7 @@ class OcularPipeline:
             print("Capturing raw feature trajectories (%.0f MB)"
                   % (feat_xy.nbytes / 1e6))
         cur_seg = -1
+        n_reseeds = 0              # segment restarts from feature loss, NOT blinks
 
         fidx = -1
         wait_left = 0
@@ -441,7 +603,7 @@ class OcularPipeline:
             if mask_dir:
                 iris_mask = load_iris_mask(mask_dir, fidx, gray.shape,
                                            mask_scale, mask_pad_x, mask_pad_y,
-                                           cfg.mask_erode_px)
+                                           cfg.mask_erode_px, mask_inner)
                 if iris_mask is not None and cfg.glint_threshold < 255:
                     # drop specular reflections: fixed to the illuminator, so
                     # they do not rotate with the eye
@@ -459,38 +621,48 @@ class OcularPipeline:
             torsion = np.nan
             torsion_in = np.nan
             torsion_out = np.nan
+            resid_px = np.nan
+            n_used = 0
             n_valid = 0
+
+            # Segment state dropped on a blink or on running out of features.
+            # The next tracked frame re-seeds and starts a new segment.
+            NO_SEGMENT = (None, None, None, None, None, 0)
 
             if wait_left > 0:
                 # still recovering from a blink: skip tracking this frame
                 wait_left -= 1
                 is_blink = True
-                feat_prev = None
-                ref_theta = None
-                ref_pts = None
+                (feat_prev, ref_gray, ref_pts,
+                 alive, fail_count, n_seeded) = NO_SEGMENT
             elif is_blink:
-                feat_prev = None
-                ref_theta = None
-                ref_pts = None
+                (feat_prev, ref_gray, ref_pts,
+                 alive, fail_count, n_seeded) = NO_SEGMENT
                 wait_left = wait_frames
             else:
-                if feat_prev is None or len(feat_prev) == 0:
+                if ref_pts is None or len(ref_pts) == 0:
                     # (re)seed features against the LOCKED aoi -> new segment
                     pts, valid = detect_features(gray, aoi, cfg, iris_mask)
                     if valid:
-                        feat_prev = pts
-                        # Store the reference POSITIONS, not reference angles.
-                        # Angles must be recomputed each frame about the centroid
-                        # of whichever features are still valid then -- see the
-                        # torsion block below for why.
+                        # This frame becomes the segment reference: positions AND
+                        # image. The image is the anchor that stops slide.
                         ref_pts = pts.copy()
-                        ref_theta = True          # segment reference now exists
-                        ref_r = None
-                        torsion = 0.0
-                        torsion_in = 0.0
-                        torsion_out = 0.0
-                        n_valid = len(pts)
-                        cur_seg += 1          # new inter-blink segment starts here
+                        ref_gray = gray.copy()
+                        feat_prev = pts.copy()
+                        alive = np.ones(len(pts), bool)
+                        fail_count = np.zeros(len(pts), np.int32)
+                        n_seeded = len(pts)
+
+                        # Ring radii about the locked AOI centre, computed once so
+                        # membership is fixed for the segment. Recomputing them
+                        # each frame about the moving survivor centroid, as before,
+                        # let features drift between rings.
+                        ref_r = np.hypot(pts[:, 0] - aoi[0], pts[:, 1] - aoi[1])
+
+                        torsion = torsion_in = torsion_out = 0.0
+                        resid_px = 0.0
+                        n_valid = n_used = len(pts)
+                        cur_seg += 1          # a new segment starts here
                         if cap_feats:
                             m = min(len(pts), cfg.max_features)
                             feat_xy[fidx, :m] = pts[:m]
@@ -500,17 +672,30 @@ class OcularPipeline:
                         is_blink = True
                         wait_left = wait_frames
                 else:
-                    # track existing features into this frame
-                    p0 = feat_prev.reshape(-1, 1, 2)
-                    p1, st, _ = cv2.calcOpticalFlowPyrLK(
-                        prev_gray, gray, p0, None, **self.lk_params)
-                    p0r, _, _ = cv2.calcOpticalFlowPyrLK(
-                        gray, prev_gray, p1, None, **self.lk_params)
-                    fb = np.abs(p0 - p0r).reshape(-1, 2).max(axis=1)
-                    good = (st.reshape(-1) == 1) & (fb < 1.0)
+                    # ---- track reference features into this frame -------------
+                    if cfg.anchor_on_reference:
+                        p1, good = track_from_reference(
+                            ref_gray, gray, ref_pts, feat_prev,
+                            self.lk_params, cfg.fb_max_px)
+                    else:                      # legacy chained path
+                        p0 = feat_prev.reshape(-1, 1, 2)
+                        p1_, st, _ = cv2.calcOpticalFlowPyrLK(
+                            prev_gray, gray, p0, None, **self.lk_params)
+                        p0r, _, _ = cv2.calcOpticalFlowPyrLK(
+                            gray, prev_gray, p1_, None, **self.lk_params)
+                        fb = np.abs(p0 - p0r).reshape(-1, 2).max(axis=1)
+                        good = (st.reshape(-1) == 1) & (fb < cfg.fb_max_px)
+                        p1 = p1_.reshape(-1, 2)
 
-                    p1 = p1.reshape(-1, 2)
-                    # keep correspondence with the reference arrays
+                    # A feature failing this frame is excluded from this frame's
+                    # estimate either way; retirement needs sustained failure so
+                    # that a single blurred frame does not cull the set.
+                    if cfg.sticky_validity:
+                        fail_count[good] = 0
+                        fail_count[~good] += 1
+                        alive &= (fail_count < cfg.retire_after)
+                        good = good & alive
+
                     cur = p1.copy()
                     cur[~good] = np.nan
 
@@ -518,12 +703,9 @@ class OcularPipeline:
                     inside = ((cur[:, 0] - aoi[0]) ** 2 +
                               (cur[:, 1] - aoi[1]) ** 2) < aoi[2] ** 2
 
-                    # Features drift. A point seeded on iris can be carried onto
-                    # the lid or across the pupil boundary within a segment, so
-                    # re-test membership every frame rather than trusting the
-                    # seed. Points that leave the iris stop contributing to both
-                    # the torsion angle AND the centroid used to cancel
-                    # translation -- the latter is the important part.
+                    # A point seeded on iris can still be carried onto the lid or
+                    # across the pupil boundary, so re-test mask membership each
+                    # frame rather than trusting the seed.
                     if iris_mask is not None:
                         h_, w_ = iris_mask.shape[:2]
                         xi = np.clip(np.nan_to_num(cur[:, 0], nan=-1).astype(int),
@@ -533,61 +715,64 @@ class OcularPipeline:
                         on_iris = (iris_mask[yi, xi] > 0) & np.isfinite(cur[:, 0])
                         inside = inside & on_iris
 
-                    n_valid = int(np.nansum(good & inside))
+                    valid_mask = good & inside & np.isfinite(cur[:, 0])
+                    n_valid = int(valid_mask.sum())
 
-                    if n_valid < cfg.min_features * (1 - 0.40):
-                        # too few survived -> treat as blink/loss, re-seed next
-                        feat_prev = None
-                        ref_theta = None
-                        ref_pts = None
-                        is_blink = True
-                        wait_left = wait_frames
+                    # Out of usable correspondences, but the eye has not closed:
+                    # start a new reference without flagging a blink or burning
+                    # the recovery window.
+                    floor = max(cfg.reseed_min, int(cfg.reseed_frac * n_seeded))
+                    if n_valid < floor:
+                        (feat_prev, ref_gray, ref_pts,
+                         alive, fail_count, n_seeded) = NO_SEGMENT
+                        n_reseeds += 1
                     else:
-                        # ---- TORSION: centroid re-centre removes translation ----
-                        #
-                        # Both origins must be defined by the SAME set of
-                        # features. Features are lost steadily through a segment
-                        # (measured: 177 seeded, ~11 surviving to the end, i.e.
-                        # 94% turnover). If the reference origin is fixed at the
-                        # centroid of ALL seeded features while the current
-                        # origin follows only the survivors, the two drift apart
-                        # for reasons that have nothing to do with eye movement
-                        # -- a spurious shift of 14.7 px median, up to 47.9 px,
-                        # which correlated with torsion drift at rho = +0.68.
-                        #
-                        # Recomputing the reference centroid over the same subset
-                        # makes any such shift common to both frames, so it
-                        # cancels in the angular difference.
-                        valid_mask = good & inside
-                        rxr = np.nanmean(ref_pts[valid_mask, 0])
-                        ryr = np.nanmean(ref_pts[valid_mask, 1])
-                        cxr = np.nanmean(cur[valid_mask, 0])
-                        cyr = np.nanmean(cur[valid_mask, 1])
+                        # ---- torsion ------------------------------------------
+                        # Both centroids come from the same surviving subset, so a
+                        # dropout-induced origin shift is common to the two frames
+                        # and cancels in the rotation.
+                        A = ref_pts[valid_mask]
+                        B = cur[valid_mask]
 
-                        ref_r, ref_theta_f = cart2pol(ref_pts[:, 0] - rxr,
-                                                      ref_pts[:, 1] - ryr)
-                        rr, th = cart2pol(cur[:, 0] - cxr, cur[:, 1] - cyr)
-                        dth = th - ref_theta_f
-                        torsion = circular_median_deg(np.where(valid_mask, dth,
-                                                              np.nan))
+                        if cfg.torsion_estimator == "procrustes":
+                            torsion, resid_px, n_used = procrustes_rotation(
+                                A, B, cfg.tukey_c, cfg.irls_iters)
+                        else:
+                            rxr, ryr = A[:, 0].mean(), A[:, 1].mean()
+                            cxr, cyr = B[:, 0].mean(), B[:, 1].mean()
+                            _, t0 = cart2pol(A[:, 0] - rxr, A[:, 1] - ryr)
+                            _, t1 = cart2pol(B[:, 0] - cxr, B[:, 1] - cyr)
+                            torsion = circular_median_deg(t1 - t0)
+                            resid_px = np.nan
+                            n_used = len(A)
 
-                        # inner vs outer iris (per MATLAB inner/outer rim split).
-                        # Radii come from the REFERENCE frame, so a feature keeps
-                        # its ring membership for the whole segment.
-                        if ref_r is not None:
-                            med = np.nanmedian(np.where(valid_mask, ref_r, np.nan))
-                            inner = valid_mask & (ref_r < med)
-                            outer = valid_mask & (ref_r >= med)
-                            torsion_in = circular_median_deg(
-                                np.where(inner, dth, np.nan))
-                            torsion_out = circular_median_deg(
-                                np.where(outer, dth, np.nan))
+                        # inner vs outer iris (per the MATLAB rim split). Radii
+                        # are the fixed reference radii about the AOI centre, so
+                        # ring membership is constant for the whole segment.
+                        med = float(np.median(ref_r[valid_mask]))
+                        for tag, sel in (("in", valid_mask & (ref_r < med)),
+                                         ("out", valid_mask & (ref_r >= med))):
+                            if int(sel.sum()) >= 3:
+                                if cfg.torsion_estimator == "procrustes":
+                                    v = procrustes_rotation(
+                                        ref_pts[sel], cur[sel],
+                                        cfg.tukey_c, cfg.irls_iters)[0]
+                                else:
+                                    a_, b_ = ref_pts[sel], cur[sel]
+                                    _, s0 = cart2pol(a_[:, 0] - a_[:, 0].mean(),
+                                                     a_[:, 1] - a_[:, 1].mean())
+                                    _, s1 = cart2pol(b_[:, 0] - b_[:, 0].mean(),
+                                                     b_[:, 1] - b_[:, 1].mean())
+                                    v = circular_median_deg(s1 - s0)
+                            else:
+                                v = np.nan
+                            if tag == "in":
+                                torsion_in = v
+                            else:
+                                torsion_out = v
 
-                        # advance: keep only good points, and their refs, so the
-                        # arrays stay aligned for the next frame
+                        # advance the LK initial guess only
                         feat_prev = p1
-                        # ref_pts stays fixed for the segment; the ANGLES
-                        # about it are recomputed per frame (see above).
 
                         if cap_feats:
                             m = min(len(cur), cfg.max_features)
@@ -602,6 +787,13 @@ class OcularPipeline:
                 torsion_deg=torsion,
                 torsion_inner_deg=torsion_in,
                 torsion_outer_deg=torsion_out,
+                # Quality channel: median per-feature distance to the fitted
+                # rotation. A smooth trace with a large residual is smoothly wrong.
+                torsion_resid_px=resid_px,
+                torsion_n_used=n_used,
+                # Explicit segment id. Downstream code cannot infer this from the
+                # blink flag now that re-seeds start a reference without a blink.
+                seg=(cur_seg if (ref_pts is not None and not is_blink) else -1),
             ))
 
             # ---- optional live tracking display (like the old RunMe window) ----
@@ -657,7 +849,8 @@ class OcularPipeline:
         out_csv = os.path.join(out_dir, "ocular_%s.csv" % base)
         cols = ["frame", "time", "pupil_x", "pupil_y", "pupil_radius",
                 "pupil_fit_err", "n_features", "blink", "torsion_deg",
-                "torsion_inner_deg", "torsion_outer_deg"]
+                "torsion_inner_deg", "torsion_outer_deg",
+                "torsion_resid_px", "torsion_n_used", "seg"]
         with open(out_csv, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=cols)
             w.writeheader()
@@ -665,6 +858,8 @@ class OcularPipeline:
                 w.writerow({k: ("" if (isinstance(r[k], float) and np.isnan(r[k]))
                                 else r[k]) for k in cols})
         print("Wrote:", out_csv)
+        print("Segments: %d  (%d started by re-seed after feature loss, "
+              "not by a blink)" % (cur_seg + 1, n_reseeds))
 
         # ---- raw per-feature trajectories ----
         if cap_feats:
@@ -795,6 +990,38 @@ class OcularPipeline:
                       np.median(valid),
                       np.percentile(valid, 25), np.percentile(valid, 75),
                       np.std(valid), valid.size, nb))
+
+        # ---- rigid-fit residual ---------------------------------------------
+        # Reported by position within segment because the failure this tracker
+        # was built to fix is residual GROWTH across a segment. Flat means the
+        # reference anchoring is holding; rising means the trace is drifting
+        # however smooth it looks.
+        res = np.array([r.get("torsion_resid_px", np.nan) for r in rows], float)
+        seg = np.array([r.get("seg", -1) for r in rows], int)
+        m = np.isfinite(res) & (seg >= 0)
+        if m.sum() > 100:
+            print("Rigid-fit residual: median %.2f px  p90 %.2f px"
+                  % (np.median(res[m]), np.percentile(res[m], 90)))
+            # position of each frame within its own segment, as a fraction
+            frac = np.full(len(rows), np.nan)
+            for s in np.unique(seg[seg >= 0]):
+                idx = np.flatnonzero(seg == s)
+                if len(idx) > 1:
+                    frac[idx] = np.arange(len(idx)) / (len(idx) - 1.0)
+            # NaN must be replaced before casting to int -- casting NaN is
+            # undefined and numpy warns. Frames with no segment are masked out
+            # by np.isfinite(frac) below regardless of what they bin to.
+            bins = np.clip(np.nan_to_num(frac * 5, nan=-1.0), -1, 4.999)
+            bins = bins.astype(int)
+            parts = []
+            for b in range(5):
+                sel = m & np.isfinite(frac) & (bins == b)
+                parts.append("%.1f" % np.median(res[sel]) if sel.sum() > 10
+                             else "--")
+            print("  by position within segment (start->end): %s px"
+                  % "  ".join(parts))
+            print("  Flat = reference anchoring holding. Rising = LK slide is "
+                  "still accumulating.")
         print("done")
 
 
@@ -865,6 +1092,45 @@ def _selftest():
         print("    %3.0f%% features kept  ->  %7.3f   [%s]"
               % (100 * frac, est, flag))
 
+    # ------------------------------------------------------------------
+    # Procrustes estimator: same two tests, plus outlier contamination.
+    # ------------------------------------------------------------------
+    print()
+    print("  procrustes estimator, known rotation under translation:")
+    for deg in [0, 1, 2.5, -3, 7, -10]:
+        k = np.radians(deg)
+        R = np.array([[np.cos(k), -np.sin(k)], [np.sin(k), np.cos(k)]])
+        A = np.c_[ix + rad * np.cos(ang), iy + rad * np.sin(ang)]
+        B = (A - [ix, iy]) @ R.T + [ix, iy] + np.random.uniform(-25, 25, 2)
+        est, res, _ = procrustes_rotation(A, B)
+        flag = "OK" if (abs(est - deg) < 0.05 and res < 1e-6) else "FAIL"
+        if flag == "FAIL":
+            ok = False
+        print("    known %6.2f  ->  %7.3f   resid %.2e  [%s]"
+              % (deg, est, res, flag))
+
+    print()
+    print("  procrustes robustness (true rotation 3.00 deg, some features "
+          "grossly mis-tracked):")
+    A = np.c_[ix + rad * np.cos(ang), iy + rad * np.sin(ang)]
+    k = np.radians(3.0)
+    R = np.array([[np.cos(k), -np.sin(k)], [np.sin(k), np.cos(k)]])
+    B0 = (A - [ix, iy]) @ R.T + [ix, iy]
+    for frac in (0.0, 0.05, 0.15, 0.30):
+        B = B0.copy()
+        nbad = int(len(B) * frac)
+        if nbad:
+            bad = np.random.choice(len(B), nbad, replace=False)
+            B[bad] += np.random.uniform(-40, 40, (nbad, 2))
+        est, res, nused = procrustes_rotation(A, B)
+        # a plain least-squares fit would be dragged badly; the biweight should
+        # hold the estimate to within a tenth of a degree up to ~30% outliers
+        flag = "OK" if abs(est - 3.0) < 0.10 else "FAIL"
+        if flag == "FAIL":
+            ok = False
+        print("    %3.0f%% outliers  ->  %7.3f   resid %5.2f px  n_used %3d  [%s]"
+              % (100 * frac, est, res, nused, flag))
+
     print("SELFTEST", "PASSED" if ok else "FAILED")
     return ok
 
@@ -899,6 +1165,18 @@ def main():
     ap.add_argument("--min-distance", type=int, default=None,
                     help="minimum spacing between features (default %d)"
                          % Config.min_distance)
+    ap.add_argument("--estimator", choices=["procrustes", "median"],
+                    default=None,
+                    help="torsion estimator (default %s). 'procrustes' is the "
+                         "least-squares rigid rotation with Tukey reweighting; "
+                         "'median' is the older circular-median-of-angles, kept "
+                         "for regression comparison." % Config.torsion_estimator)
+    ap.add_argument("--legacy-chain", action="store_true",
+                    help="reproduce the OLD frame-to-frame LK chaining and "
+                         "non-sticky feature validity. For before/after runs "
+                         "only -- it lets per-feature slide accumulate, which "
+                         "grew the rigid-fit residual from ~2 px to ~10 px "
+                         "across a segment on video 8.")
     ap.add_argument("--show", action="store_true",
                     help="show live tracking window (slower; press q to quit)")
     ap.add_argument("--slow", action="store_true",
@@ -926,6 +1204,13 @@ def main():
         cfg.min_quality = args.min_quality
     if args.min_distance is not None:
         cfg.min_distance = args.min_distance
+    if args.estimator is not None:
+        cfg.torsion_estimator = args.estimator
+    if args.legacy_chain:
+        cfg.anchor_on_reference = False
+        cfg.sticky_validity = False
+        cfg.lk_levels = 2
+        cfg.torsion_estimator = "median"
     OcularPipeline(cfg).run(args.video, aoi, ritnet_csv=args.ritnet,
                             meta_path=args.meta, out_dir=args.out,
                             max_frames=args.max_frames, mask_dir=args.masks)

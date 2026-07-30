@@ -61,10 +61,33 @@ Usage:
                                    --out data/video_8/analysis
 """
 import os
+import time
+import hashlib
 import argparse
 
 import numpy as np
 import pandas as pd
+
+
+def provenance(path):
+    """Identify the exact input this report was built from.
+
+    An earlier report here was left in place after its input CSV was regenerated
+    and went on quoting a product-term slope 23x the true value. Stamping the
+    input's hash and modification time makes that visible rather than silent.
+    """
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    st = os.stat(path)
+    return dict(
+        path=os.path.abspath(path),
+        sha256=h.hexdigest()[:16],
+        mtime=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
+        size_mb=st.st_size / 1e6,
+        generated=time.strftime("%Y-%m-%d %H:%M:%S"),
+    )
 
 
 # Physical constants (overridable)
@@ -82,10 +105,18 @@ def load(csv_path, torsion_col):
     if torsion_col not in d:
         raise SystemExit("No column %r in %s" % (torsion_col, csv_path))
 
-    # Segment index BEFORE filtering, so blinks delimit segments correctly.
-    d["segment"] = (d["blink"].fillna(0) == 1).cumsum()
+    # Prefer the explicit `seg` column: the torsion reference resets at blinks
+    # AND at re-seeds after feature loss, and only the tracker knows about the
+    # latter. A cumsum over the blink flag merges the segments either side of a
+    # re-seed, pooling two different zero references.
+    if "seg" in d.columns and d["seg"].notna().any():
+        d["segment"] = d["seg"]
+    else:
+        d["segment"] = (d["blink"].fillna(0) == 1).cumsum()
 
     ok = (d["blink"].fillna(0) != 1)
+    if "seg" in d.columns:
+        ok &= (d["seg"].fillna(-1) >= 0)
     if "pupil_found" in d:
         ok &= (d["pupil_found"].fillna(0) == 1)
     ok &= d[torsion_col].notna() & d["pupil_x"].notna() & d["pupil_y"].notna()
@@ -232,10 +263,18 @@ def main():
     d["product"] = d["th"] * d["tv"]
     tor = d[args.torsion_col]
 
+    prov = provenance(args.csv)
+
     L = []
     L.append("=" * 72)
     L.append("LISTING'S LAW ANALYSIS -- %s" % os.path.basename(args.csv))
     L.append("=" * 72)
+    L.append("")
+    L.append("PROVENANCE  (if the input has changed since, this report is stale)")
+    L.append("  input                     %s" % prov["path"])
+    L.append("  input sha256[:16]         %s" % prov["sha256"])
+    L.append("  input last modified       %s" % prov["mtime"])
+    L.append("  report generated          %s" % prov["generated"])
     L.append("")
     L.append("DATA")
     L.append("  frames in file            %d" % n_all)

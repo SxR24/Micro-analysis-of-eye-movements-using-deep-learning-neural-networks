@@ -28,6 +28,11 @@ Usage:
 import argparse, csv, json
 import numpy as np
 
+# A reported pupil smaller than this fraction of the recording's median pupil
+# diameter is treated as a segmentation artefact (lid/lash line) rather than a
+# real pupil, and the frame is demoted to pupil_found=0.
+PUPIL_DIAM_FLOOR_FRAC = 0.7
+
 
 def load_csv(path):
     with open(path) as f:
@@ -82,7 +87,22 @@ def main():
                 "iris_x", "iris_y", "iris_diam",
                 "pupil_found",
                 "torsion_deg", "torsion_inner_deg", "torsion_outer_deg",
+                "torsion_resid_px", "torsion_n_used", "seg",
                 "n_features", "blink"]
+
+    # ---- blink false-negative rule ---------------------------------------
+    # Some closed-eye frames pass blink==0 with pupil_found==1 while reporting an
+    # implausibly small pupil: the segmentation has latched onto a sliver of dark
+    # lash line. Gating on diameter relative to the recording's own median needs
+    # no per-video tuning.
+    diams = []
+    for r in ritnet.values():
+        v = fnum(r.get("pupil_diam"))
+        if not np.isnan(v) and int(fnum(r.get("pupil_found", 0))) == 1:
+            diams.append(v)
+    med_diam = float(np.median(diams)) if diams else np.nan
+    min_diam = PUPIL_DIAM_FLOOR_FRAC * med_diam if diams else -np.inf
+    n_gated = 0
 
     n_matched = 0
     with open(args.out, "w", newline="") as fh:
@@ -99,11 +119,19 @@ def main():
             row["torsion_outer_deg"] = o.get("torsion_outer_deg", "")
             row["n_features"] = o.get("n_features", "")
             row["blink"] = o.get("blink", "")
+            row["torsion_resid_px"] = o.get("torsion_resid_px", "")
+            row["torsion_n_used"] = o.get("torsion_n_used", "")
+            row["seg"] = o.get("seg", "")
             # RITnet side (transform coords to original space)
             if fr in ritnet:
                 n_matched += 1
                 rr = ritnet[fr]
                 pf = int(fnum(rr.get("pupil_found", 0)))
+                raw_diam = fnum(rr.get("pupil_diam"))
+                if pf == 1 and not np.isnan(raw_diam) and raw_diam < min_diam:
+                    # implausibly small "pupil" -> a lid artefact, not an eye
+                    pf = 0
+                    n_gated += 1
                 row["pupil_found"] = pf
                 px_ = to_orig_x(fnum(rr.get("pupil_x")))
                 py_ = to_orig_y(fnum(rr.get("pupil_y")))
@@ -121,6 +149,9 @@ def main():
 
     print("Merged %d ocular frames; %d matched a RITnet frame." %
           (len(ocular_rows), n_matched))
+    print("Pupil-diameter gate: median %.1f px, floor %.1f px (%.2f x median); "
+          "%d frames demoted to pupil_found=0."
+          % (med_diam, min_diam, PUPIL_DIAM_FLOOR_FRAC, n_gated))
     print("Wrote:", args.out)
     print("Coordinate transform applied: x=(mx-%g)/%g, y=(my-%g)/%g"
           % (px, sx, py, sy))

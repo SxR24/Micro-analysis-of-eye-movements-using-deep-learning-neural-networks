@@ -58,9 +58,24 @@ def segment_stats(d, key="torsion_outer_deg", min_len=25):
                         features and LOWER jitter while drift gets dramatically
                         worse, because weak corners slide smoothly rather than
                         jumping.
+
+    SEGMENTATION
+    ------------
+    A segment is a span sharing ONE torsion reference. Blinks are not the only
+    thing that starts a new one: tracking re-seeds when the surviving feature set
+    runs out, which resets torsion to zero without setting the blink flag.
+
+    A cumsum over `blink` therefore lumps several zero-referenced spans together
+    and breaks the drift measure: |last - first| where both are seed frames gives
+    exactly 0.000, which reads as a perfect result rather than a broken metric.
+    Use the explicit `seg` column.
     """
     d = d.copy()
-    d["_seg"] = (d["blink"] == 1).cumsum()
+    if "seg" in d.columns and d["seg"].notna().any():
+        d["_seg"] = d["seg"]
+        d = d[d["_seg"] >= 0]
+    else:
+        d["_seg"] = (d["blink"] == 1).cumsum()
     sds, drifts = [], []
     for _, g in d[tracked(d)].groupby("_seg"):
         v = g[key].dropna()

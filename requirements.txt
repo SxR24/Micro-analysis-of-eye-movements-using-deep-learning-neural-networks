@@ -1,16 +1,28 @@
+# ----------------------------------------------------------------------
+# REPRODUCIBILITY
+# ----------------------------------------------------------------------
+# These are lower bounds, not pins. Before submission, freeze the versions you
+# actually ran against, so the numbers in the dissertation can still be
+# reproduced in three years:
+#
+#     pip freeze > requirements.lock.txt
+#
+# Commit that lock file and cite IT in the methods section, not this file.
+# ----------------------------------------------------------------------
+
 # Core pipeline
-numpy
-opencv-python
-pandas
+numpy>=1.24
+opencv-python>=4.8
+pandas>=2.0
 
 # RITnet inference (stage 2 only). Install the build matching your CUDA
 # version from pytorch.org if you have a GPU; CPU works but is slow.
-torch
+torch>=2.0
 
 # Analysis and figures
-scipy
-matplotlib
+scipy>=1.10
+matplotlib>=3.7
 
 # Review app (stage 7)
-streamlit
-altair
+streamlit>=1.30
+altair>=5.0

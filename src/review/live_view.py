@@ -371,7 +371,17 @@ def main():
         if v != seek["own"]:
             seek["req"] = v
 
-    cv2.createTrackbar("frame", win, 0, max(n - 1, 1), on_track)
+    # Trackbar support depends on the highgui backend OpenCV was built against.
+    # On OpenCV 5.0.0 / Windows it fails to attach and the later setTrackbarPos
+    # raises, killing the viewer over a widget. Probe once and fall back to
+    # keyboard navigation.
+    has_track = False
+    try:
+        cv2.createTrackbar("frame", win, 0, max(n - 1, 1), on_track)
+        cv2.getTrackbarPos("frame", win)      # raises if it did not attach
+        has_track = True
+    except cv2.error:
+        print("  (no scrub bar on this OpenCV build -- use J/L and , . to move)")
 
     i = max(0, min(args.start, n - 1))
     cap.set(cv2.CAP_PROP_POS_FRAMES, i)
@@ -404,7 +414,11 @@ def main():
         canvas = compose(frame, min(i, n - 1), D, feats, state, args.height)
         cv2.imshow(win, canvas)
         seek["own"] = min(i, n - 1)
-        cv2.setTrackbarPos("frame", win, seek["own"])
+        if has_track:
+            try:
+                cv2.setTrackbarPos("frame", win, seek["own"])
+            except cv2.error:
+                has_track = False      # backend dropped it; stop trying
 
         delay = max(1, int(1000.0 / (fps * state["speed"]))) if state["playing"] else 30
         k = cv2.waitKey(delay) & 0xFF
