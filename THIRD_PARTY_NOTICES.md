@@ -93,12 +93,7 @@ here and is not taken from either original.
 - Ivins, J.P. and Porrill, J. (1998) — iris pattern tracking for torsion
 - Sadeghi, R. et al. (2024) — OpenIris
 
-> **ACTION REQUIRED before publishing this repository.** The licence status of
-> the inherited irisometry code has not been confirmed in writing. Because
-> `ocular.py` is an independent implementation this is a citation question
-> rather than a distribution question, but confirm with the supervisor and the
-> original authors that (a) the attribution above is how they wish to be
-> credited, and (b) nothing in this repository reproduces their code.
+
 
 ---
 
