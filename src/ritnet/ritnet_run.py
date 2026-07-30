@@ -1,9 +1,29 @@
+"""
+ritnet_run.py
+======================================================================
+Batch inference driver: runs the pretrained RITnet segmentation model over a
+folder of extracted frames and writes 4-class masks plus overlays.
+
+Written for this project, but the MODEL and WEIGHTS it loads are not mine:
+
+    densenet.py       DenseNet2D architecture, from RITnet, unmodified
+    best_model.pkl    RITnet's published checkpoint (248,900 parameters)
+
+RITnet is MIT licensed, Copyright (c) 2019 Aayush Chaudhary et al.
+See THIRD_PARTY_NOTICES.md for the full notice and the requested citation:
+Chaudhary et al. (2019), ICCVW, pp. 3698-3702.
+
+Inference only. No training or fine-tuning is performed anywhere in this
+project; the published weights are used as released.
+
+Sohil Ananth, MSc Bioinformatics & CS, University of Leicester
+"""
 import os, glob, argparse
 import numpy as np
 import cv2
 import torch
 from PIL import Image
-from densenet import DenseNet2D   # model class from the repo
+from densenet import DenseNet2D   # RITnet model class, see notice above
 
 # ---- label colors (4 classes: background, sclera, iris, pupil) ----
 PALETTE = np.array([

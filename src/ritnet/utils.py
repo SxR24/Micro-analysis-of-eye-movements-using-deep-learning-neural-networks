@@ -10,6 +10,22 @@ References:
     https://github.com/ycszen/pytorch-segmentation/blob/master/loss.py
     https://discuss.pytorch.org/t/using-cross-entropy-loss-with-semantic-segmentation-model/31988
     https://github.com/LIVIAETS/surface-loss
+
+------------------------------------------------------------------------------
+THIRD-PARTY FILE, UNUSED. Reproduced unmodified from RITnet:
+    https://github.com/AayushKrChaudhary/RITnet
+
+MIT Licence, Copyright (c) 2019 Aayush Chaudhary, Rakshit Kothari,
+Manoj Acharya, Shusil Dangi, Nitinraj Nair, Reynold Bailey,
+Christopher Kanan, Gabriel Diaz, and Jeff Pelz.
+Full licence text in THIRD_PARTY_NOTICES.md.
+
+Nothing in this project imports this module. It contains RITnet's TRAINING
+utilities -- loss functions (focal, cross-entropy, surface, generalised Dice),
+mIoU metrics and a logger -- and this project performs inference only, using
+the published weights as released. It is retained so that the provenance of the
+inherited code is visible rather than silently pruned.
+------------------------------------------------------------------------------
 """
 import numpy as np
 import torch

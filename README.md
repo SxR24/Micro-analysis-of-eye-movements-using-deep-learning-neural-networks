@@ -14,6 +14,13 @@ the other lacks. The two are fused per frame into a single table.
 
 MSc Bioinformatics & Computer Science, University of Leicester.
 
+> **The segmentation model is not mine.** `densenet.py` and `best_model.pkl` are
+> RITnet, by Chaudhary et al. (2019), used unmodified for inference under its MIT
+> licence. The torsion measurement follows the irisometry approach of the
+> Strauch/Naber lineage. Full attribution, licence text and citations are in
+> [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — please read it before
+> reusing anything here.
+
 ---
 
 ## Quick start
@@ -39,6 +46,8 @@ Run every command **from the project root** — all paths are relative to it.
 ## Layout
 
 ```
+├── LICENSE                 MIT, this project's original work
+├── THIRD_PARTY_NOTICES.md  RITnet licence + citations. Read before reusing
 ├── src/
 │   ├── preprocess/     video -> frames, with the geometry metadata
 │   ├── ritnet/         segmentation, geometry metrics, AOI handoff
@@ -46,7 +55,7 @@ Run every command **from the project root** — all paths are relative to it.
 │   ├── analysis/       Listing's Law test
 │   └── review/         Streamlit app + OpenCV playback viewer
 ├── models/
-│   ├── best_model.pkl  live RITnet checkpoint
+│   ├── best_model.pkl  RITnet checkpoint (third party, MIT — see notices)
 │   └── old.pkl         superseded
 ├── data/               (git-ignored — reproducible, ~27 GB)
 │   ├── raw/            source videos 1–8.avi

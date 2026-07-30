@@ -9,6 +9,19 @@ References:
     https://github.com/ShusilDangi/DenseUNet-K
 It is a simplied version of DenseNet with U-NET architecture.
 2D implementation
+
+------------------------------------------------------------------------------
+THIRD-PARTY FILE. Reproduced unmodified from RITnet:
+    https://github.com/AayushKrChaudhary/RITnet
+
+MIT Licence, Copyright (c) 2019 Aayush Chaudhary, Rakshit Kothari,
+Manoj Acharya, Shusil Dangi, Nitinraj Nair, Reynold Bailey,
+Christopher Kanan, Gabriel Diaz, and Jeff Pelz.
+Full licence text in THIRD_PARTY_NOTICES.md.
+
+Cite: Chaudhary et al. (2019) 'RITnet: real-time semantic segmentation of the
+eye for gaze tracking', ICCVW, pp. 3698-3702.
+------------------------------------------------------------------------------
 """
 import torch
 import math
