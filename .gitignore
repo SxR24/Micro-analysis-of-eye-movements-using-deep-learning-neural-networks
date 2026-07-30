@@ -60,3 +60,6 @@ live_view_frame_*.png
 # A running Streamlit server holds src/review/app.py open and can drop a stale
 # copy back at the repo root. The real file lives in src/review/.
 /app.py
+
+# Word/Excel lock files, created while a document is open
+~$*

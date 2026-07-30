@@ -49,6 +49,11 @@ python src/irisometry/compare_runs.py --before %VDIR%\baseline_aoifix\ocular_8_A
 if errorlevel 1 goto :failed
 
 echo.
+echo --- vs the mask-gated run (isolates the moving-origin fix) ---
+python src/irisometry/compare_runs.py --before %VDIR%\baseline_maskgate\ocular_8_MASKGATE.csv --after %VDIR%\ocular_8.csv --ritnet %VDIR%\ritnet_8.csv --out %VDIR%\comparison_vs_maskgate
+if errorlevel 1 goto :failed
+
+echo.
 echo ============================================================
 echo  DONE
 echo ============================================================

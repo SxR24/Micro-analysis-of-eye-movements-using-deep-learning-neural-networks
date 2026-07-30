@@ -376,7 +376,8 @@ class OcularPipeline:
         # per-frame records
         rows = []                  # dict per analysed frame
         feat_prev = None           # tracked points from previous frame (Nx2)
-        ref_theta = None           # reference angles for the current segment
+        ref_theta = None           # marks whether a segment reference exists
+        ref_pts = None             # reference POSITIONS for the current segment
         ref_r = None               # reference radii (for inner/outer split)
         prev_gray = None
 
@@ -466,9 +467,11 @@ class OcularPipeline:
                 is_blink = True
                 feat_prev = None
                 ref_theta = None
+                ref_pts = None
             elif is_blink:
                 feat_prev = None
                 ref_theta = None
+                ref_pts = None
                 wait_left = wait_frames
             else:
                 if feat_prev is None or len(feat_prev) == 0:
@@ -476,9 +479,13 @@ class OcularPipeline:
                     pts, valid = detect_features(gray, aoi, cfg, iris_mask)
                     if valid:
                         feat_prev = pts
-                        # establish the segment reference about the centroid
-                        cxr, cyr = np.mean(pts[:, 0]), np.mean(pts[:, 1])
-                        ref_r, ref_theta = cart2pol(pts[:, 0] - cxr, pts[:, 1] - cyr)
+                        # Store the reference POSITIONS, not reference angles.
+                        # Angles must be recomputed each frame about the centroid
+                        # of whichever features are still valid then -- see the
+                        # torsion block below for why.
+                        ref_pts = pts.copy()
+                        ref_theta = True          # segment reference now exists
+                        ref_r = None
                         torsion = 0.0
                         torsion_in = 0.0
                         torsion_out = 0.0
@@ -532,20 +539,43 @@ class OcularPipeline:
                         # too few survived -> treat as blink/loss, re-seed next
                         feat_prev = None
                         ref_theta = None
+                        ref_pts = None
                         is_blink = True
                         wait_left = wait_frames
                     else:
                         # ---- TORSION: centroid re-centre removes translation ----
+                        #
+                        # Both origins must be defined by the SAME set of
+                        # features. Features are lost steadily through a segment
+                        # (measured: 177 seeded, ~11 surviving to the end, i.e.
+                        # 94% turnover). If the reference origin is fixed at the
+                        # centroid of ALL seeded features while the current
+                        # origin follows only the survivors, the two drift apart
+                        # for reasons that have nothing to do with eye movement
+                        # -- a spurious shift of 14.7 px median, up to 47.9 px,
+                        # which correlated with torsion drift at rho = +0.68.
+                        #
+                        # Recomputing the reference centroid over the same subset
+                        # makes any such shift common to both frames, so it
+                        # cancels in the angular difference.
                         valid_mask = good & inside
+                        rxr = np.nanmean(ref_pts[valid_mask, 0])
+                        ryr = np.nanmean(ref_pts[valid_mask, 1])
                         cxr = np.nanmean(cur[valid_mask, 0])
                         cyr = np.nanmean(cur[valid_mask, 1])
-                        rr, th = cart2pol(cur[:, 0] - cxr, cur[:, 1] - cyr)
-                        dth = th - ref_theta
-                        torsion = circular_median_deg(dth)
 
-                        # inner vs outer iris (per MATLAB inner/outer rim split)
+                        ref_r, ref_theta_f = cart2pol(ref_pts[:, 0] - rxr,
+                                                      ref_pts[:, 1] - ryr)
+                        rr, th = cart2pol(cur[:, 0] - cxr, cur[:, 1] - cyr)
+                        dth = th - ref_theta_f
+                        torsion = circular_median_deg(np.where(valid_mask, dth,
+                                                              np.nan))
+
+                        # inner vs outer iris (per MATLAB inner/outer rim split).
+                        # Radii come from the REFERENCE frame, so a feature keeps
+                        # its ring membership for the whole segment.
                         if ref_r is not None:
-                            med = np.nanmedian(ref_r)
+                            med = np.nanmedian(np.where(valid_mask, ref_r, np.nan))
                             inner = valid_mask & (ref_r < med)
                             outer = valid_mask & (ref_r >= med)
                             torsion_in = circular_median_deg(
@@ -556,7 +586,8 @@ class OcularPipeline:
                         # advance: keep only good points, and their refs, so the
                         # arrays stay aligned for the next frame
                         feat_prev = p1
-                        # (ref_theta/ref_r stay fixed for the whole segment)
+                        # ref_pts stays fixed for the segment; the ANGLES
+                        # about it are recomputed per frame (see above).
 
                         if cap_feats:
                             m = min(len(cur), cfg.max_features)
@@ -792,6 +823,48 @@ def _selftest():
         if flag == "FAIL":
             ok = False
         print("  known %6.2f  ->  estimated %7.3f   [%s]" % (deg, est, flag))
+
+    # ------------------------------------------------------------------
+    # Regression test: FEATURE DROPOUT.
+    #
+    # The test above keeps every feature, which hides the defect that
+    # mattered most in practice. Features are lost steadily through a
+    # segment (measured: ~94% turnover), and they are lost ASYMMETRICALLY
+    # -- the eyelid encroaches from above, so the survivors are biased
+    # downward. If the reference angles are held about the centroid of all
+    # ORIGINALLY seeded features while the current frame re-centres on the
+    # survivors, the two origins separate and the measured angle is wrong
+    # in proportion to that separation. Measured on real data this produced
+    # a spurious origin shift of up to 47.9 px, correlating with torsion
+    # drift at rho = +0.68.
+    #
+    # Both origins must therefore be computed over the SAME subset.
+    # ------------------------------------------------------------------
+    print()
+    print("  feature-dropout regression (true rotation 3.00 deg):")
+    n = 300
+    th0 = np.random.uniform(0, 2 * np.pi, n)
+    r0 = np.random.uniform(110, 195, n)
+    pts = np.c_[ix + r0 * np.cos(th0), iy + r0 * np.sin(th0)]
+    a = np.radians(3.0)
+    R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    c = np.array([ix, iy])
+    cur = (pts - c) @ R.T + c + np.array([12.0, -7.0])
+    order = np.argsort(pts[:, 1])          # lose the topmost features first
+    for frac in (1.0, 0.6, 0.3, 0.15):
+        sel = np.zeros(n, bool)
+        sel[order[:int(n * frac)]] = True
+        rx, ry = pts[sel, 0].mean(), pts[sel, 1].mean()
+        cx, cy = cur[sel, 0].mean(), cur[sel, 1].mean()
+        _, tr = cart2pol(pts[:, 0] - rx, pts[:, 1] - ry)
+        _, tc = cart2pol(cur[:, 0] - cx, cur[:, 1] - cy)
+        est = circular_median_deg(np.where(sel, tc - tr, np.nan))
+        flag = "OK" if abs(est - 3.0) < 0.05 else "FAIL"
+        if flag == "FAIL":
+            ok = False
+        print("    %3.0f%% features kept  ->  %7.3f   [%s]"
+              % (100 * frac, est, flag))
+
     print("SELFTEST", "PASSED" if ok else "FAILED")
     return ok
 

@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 780" width="1040" height="780" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <title>Ocular pipeline workflow</title>
+  <desc>Eye video splits into a RITnet segmentation branch in 640x400 mask space and an irisometry torsion branch in original 908x620 space. Four handoffs pass segmentation output into the tracker. Both branches merge into one per-frame table.</desc>
+
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7a87"/>
+    </marker>
+    <marker id="arH" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2a9d8f"/>
+    </marker>
+  </defs>
+
+  <rect width="1040" height="780" fill="#ffffff"/>
+
+  <!-- ============ SOURCE ============ -->
+  <rect x="385" y="20" width="270" height="52" rx="6" fill="#1a2530"/>
+  <text x="520" y="42" text-anchor="middle" font-size="15" font-weight="600" fill="#ffffff">8.avi</text>
+  <text x="520" y="60" text-anchor="middle" font-size="11.5" fill="#b9c4cd">908 × 620 · 50 fps · 28,236 frames</text>
+
+  <path d="M455,72 L300,104" stroke="#6b7a87" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+  <path d="M585,72 L742,104" stroke="#6b7a87" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <!-- ============ LANES ============ -->
+  <rect x="24" y="108" width="406" height="352" rx="8" fill="#f4f8fa" stroke="#cfd9e0"/>
+  <text x="44" y="130" font-size="11" font-weight="700" fill="#1f6f8b" letter-spacing="0.8">SEGMENTATION · mask space 640 × 400</text>
+
+  <rect x="610" y="108" width="406" height="352" rx="8" fill="#fdf6ef" stroke="#e3d3c2"/>
+  <text x="630" y="130" font-size="11" font-weight="700" fill="#c46a1f" letter-spacing="0.8">IRISOMETRY · original space 908 × 620</text>
+
+  <!-- left stages -->
+  <g font-size="13">
+    <rect x="44" y="142" width="366" height="52" rx="5" fill="#ffffff" stroke="#cfd9e0"/>
+    <text x="60" y="164" font-weight="600" fill="#1a2530">frame_shrink.py</text>
+    <text x="60" y="182" font-size="11.5" fill="#6b7a87">letterbox · scale 0.548 · pad 71/30</text>
+
+    <rect x="44" y="208" width="366" height="52" rx="5" fill="#ffffff" stroke="#cfd9e0"/>
+    <text x="60" y="230" font-weight="600" fill="#1a2530">ritnet_run.py</text>
+    <text x="60" y="248" font-size="11.5" fill="#6b7a87">DenseNet2D → background/sclera/iris/pupil</text>
+
+    <rect x="44" y="274" width="366" height="52" rx="5" fill="#ffffff" stroke="#cfd9e0"/>
+    <text x="60" y="296" font-weight="600" fill="#1a2530">ritnet_metrices.py</text>
+    <text x="60" y="314" font-size="11.5" fill="#6b7a87">iris from full disc, horizontal extent</text>
+
+    <rect x="44" y="340" width="366" height="52" rx="5" fill="#ffffff" stroke="#cfd9e0"/>
+    <text x="60" y="362" font-weight="600" fill="#1a2530">get_aoi.py</text>
+    <text x="60" y="380" font-size="11.5" fill="#6b7a87">median iris → AOI in original coords</text>
+
+    <text x="60" y="424" font-size="11.5" fill="#6b7a87">output</text>
+    <text x="60" y="441" font-size="12" font-weight="600" fill="#1f6f8b">masks/ · ritnet_8.csv</text>
+  </g>
+
+  <path d="M227,194 L227,206" stroke="#6b7a87" stroke-width="1.4" marker-end="url(#ar)"/>
+  <path d="M227,260 L227,272" stroke="#6b7a87" stroke-width="1.4" marker-end="url(#ar)"/>
+  <path d="M227,326 L227,338" stroke="#6b7a87" stroke-width="1.4" marker-end="url(#ar)"/>
+
+  <!-- right stage -->
+  <rect x="630" y="142" width="366" height="250" rx="5" fill="#ffffff" stroke="#e3d3c2"/>
+  <text x="646" y="166" font-size="13" font-weight="600" fill="#1a2530">ocular.py</text>
+  <text x="646" y="184" font-size="11.5" fill="#6b7a87">torsion, tracked on the unmodified video</text>
+
+  <g font-size="11.5" fill="#4a5a68">
+    <circle cx="654" cy="210" r="3" fill="#c46a1f"/>
+    <text x="668" y="214">Shi-Tomasi corners, inside the iris mask</text>
+    <circle cx="654" cy="238" r="3" fill="#c46a1f"/>
+    <text x="668" y="242">Lucas-Kanade tracking, forward–backward check</text>
+    <circle cx="654" cy="266" r="3" fill="#c46a1f"/>
+    <text x="668" y="270">re-centre on centroid → removes translation</text>
+    <circle cx="654" cy="294" r="3" fill="#c46a1f"/>
+    <text x="668" y="298">circular median of Δangle → torsion</text>
+    <circle cx="654" cy="322" r="3" fill="#c46a1f"/>
+    <text x="668" y="326">re-references to zero after every blink</text>
+  </g>
+  <text x="646" y="360" font-size="11.5" fill="#6b7a87">output</text>
+  <text x="646" y="377" font-size="12" font-weight="600" fill="#c46a1f">ocular_8.csv · features_8.npz</text>
+
+  <!-- ============ HANDOFFS ============ -->
+  <text x="520" y="150" text-anchor="middle" font-size="10.5" font-weight="700" fill="#2a9d8f" letter-spacing="0.6">HANDOFFS</text>
+
+  <g stroke="#2a9d8f" stroke-width="1.7" fill="none">
+    <path d="M432,196 L606,196" marker-end="url(#arH)"/>
+    <path d="M432,250 L606,250" marker-end="url(#arH)"/>
+    <path d="M432,304 L606,304" marker-end="url(#arH)"/>
+    <path d="M432,358 L606,358" marker-end="url(#arH)"/>
+  </g>
+  <g text-anchor="middle" font-size="11" fill="#1a2530">
+    <text x="519" y="191" font-weight="600">AOI seed</text>
+    <text x="519" y="211" font-size="10" fill="#6b7a87">r = 197 px</text>
+
+    <text x="519" y="245" font-weight="600">iris mask</text>
+    <text x="519" y="265" font-size="10" fill="#6b7a87">per frame · gates features</text>
+
+    <text x="519" y="299" font-weight="600">blink signal</text>
+    <text x="519" y="319" font-size="10" fill="#6b7a87">pupil present?</text>
+
+    <text x="519" y="353" font-weight="600">_frames_meta</text>
+    <text x="519" y="373" font-size="10" fill="#6b7a87">scale + pad</text>
+  </g>
+
+  <!-- ============ MERGE ============ -->
+  <path d="M227,460 C227,496 330,496 386,505" stroke="#6b7a87" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+  <path d="M813,460 C813,496 710,496 654,505" stroke="#6b7a87" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+
+  <rect x="386" y="500" width="268" height="56" rx="6" fill="#ffffff" stroke="#cfd9e0"/>
+  <text x="520" y="522" text-anchor="middle" font-size="13" font-weight="600" fill="#1a2530">merge.py</text>
+  <text x="520" y="540" text-anchor="middle" font-size="11" fill="#6b7a87">(mask − pad) / scale · join on frame</text>
+
+  <path d="M520,556 L520,578" stroke="#6b7a87" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <rect x="386" y="580" width="268" height="52" rx="6" fill="#1f6f8b"/>
+  <text x="520" y="602" text-anchor="middle" font-size="13.5" font-weight="600" fill="#ffffff">combined_8.csv</text>
+  <text x="520" y="620" text-anchor="middle" font-size="11" fill="#cfe3ec">all columns in original coordinates</text>
+
+  <!-- ============ CONSUMERS ============ -->
+  <path d="M470,632 C420,660 300,660 220,676" stroke="#6b7a87" stroke-width="1.4" fill="none" marker-end="url(#ar)"/>
+  <path d="M520,632 L520,676" stroke="#6b7a87" stroke-width="1.4" marker-end="url(#ar)"/>
+  <path d="M570,632 C620,660 740,660 820,676" stroke="#6b7a87" stroke-width="1.4" fill="none" marker-end="url(#ar)"/>
+
+  <g font-size="12.5">
+    <rect x="86" y="678" width="268" height="52" rx="5" fill="#ffffff" stroke="#cfd9e0"/>
+    <text x="220" y="700" text-anchor="middle" font-weight="600" fill="#1a2530">live_view.py</text>
+    <text x="220" y="717" text-anchor="middle" font-size="11" fill="#6b7a87">playback with tracking overlay</text>
+
+    <rect x="386" y="678" width="268" height="52" rx="5" fill="#ffffff" stroke="#cfd9e0"/>
+    <text x="520" y="700" text-anchor="middle" font-weight="600" fill="#1a2530">app.py</text>
+    <text x="520" y="717" text-anchor="middle" font-size="11" fill="#6b7a87">frame-by-frame review</text>
+
+    <rect x="686" y="678" width="268" height="52" rx="5" fill="#ffffff" stroke="#cfd9e0"/>
+    <text x="820" y="700" text-anchor="middle" font-weight="600" fill="#1a2530">analyse.py</text>
+    <text x="820" y="717" text-anchor="middle" font-size="11" fill="#6b7a87">Listing's Law test</text>
+  </g>
+
+  <text x="520" y="756" text-anchor="middle" font-size="10.5" fill="#8b98a4">Segmentation locates the iris and detects blinks; texture tracking measures the rotation segmentation cannot see.</text>
+</svg>
