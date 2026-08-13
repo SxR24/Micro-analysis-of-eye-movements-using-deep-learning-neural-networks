@@ -63,3 +63,19 @@ live_view_frame_*.png
 
 # Word/Excel lock files, created while a document is open
 ~$*
+
+# ----------------------------------------------------------------------
+# Report artefacts.
+# The manuscript itself is deliberately NOT tracked. This repository is
+# public, and text published here before submission can be matched by
+# similarity checking against its own online copy.
+# ----------------------------------------------------------------------
+Report_*.docx
+Report_*.pdf
+~$Report*
+.~lock.*#
+*.tmp
+
+# Intermediate files from extracting revised prose out of the manuscript
+figures/his_*.json
+figures/_preview/

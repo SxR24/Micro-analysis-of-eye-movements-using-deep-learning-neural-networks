@@ -11,7 +11,7 @@ Usage:
     python frames_shrink.py 3.avi --out frames_3s --max-seconds 20 --fill 0.5
 Try --fill 0.5, 0.6, 0.4 and see which segments best.
 """
-import os, sys, json, argparse
+import os, sys, json, time, argparse
 import cv2, numpy as np
 
 
@@ -45,6 +45,12 @@ def main():
     print("eye %dx%d -> %dx%d (%.0f%% fill), centred in %dx%d"
           % (ow, oh, nw, nh, args.fill * 100, args.width, args.height))
 
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    if maxf:
+        total = min(total, maxf) if total else maxf
+    print("writing %s frames to %s" % (total or "?", args.out))
+
+    t0 = time.time()
     fidx = out_id = 0
     while True:
         ret, fr = cap.read()
@@ -59,7 +65,16 @@ def main():
         cv2.imwrite(os.path.join(args.out, "frame_%06d.png" % fidx), canvas)
         out_id += 1
         fidx += 1
+
+        # PNG encoding makes this a multi-minute job on a long recording, and
+        # with no output it is indistinguishable from a hang.
+        if total and fidx % 500 == 0:
+            el = time.time() - t0
+            eta = el * (total - fidx) / max(fidx, 1)
+            print("  %5.1f%%  %6d/%d   elapsed %4.0fs  eta %4.0fs"
+                  % (100.0 * fidx / total, fidx, total, el, eta), flush=True)
     cap.release()
+    print("  done in %.0fs" % (time.time() - t0))
 
     # inner_width/inner_height record the EXACT size of the scaled image inside
     # the canvas. pad_x = (W - nw) // 2, so when (W - nw) is odd the right pad is

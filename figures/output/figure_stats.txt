@@ -1,0 +1,56 @@
+Values plotted in each figure, recomputed at generation time.
+OpenIris session: 8-PostProc-2026Aug12-181707.txt
+
+[Figure 1 - reliability]
+    chained_r                              0.321
+    chained_reliability                    0.486
+    anchored_r                             0.623
+    anchored_reliability                   0.768
+    chained_residual_profile_px            [3.18, 5.47, 6.79, 7.83, 9.04]
+    anchored_residual_profile_px           [1.11, 1.46, 1.53, 1.6, 1.67]
+    n_frames_anchored                      24939
+    n_segments_anchored                    120
+    n_frames_chained                       24846
+    n_segments_chained                     78
+
+[Figure 2 - pupil comparison]
+    window_start_s                         190.0
+    ours_pupilx_sd_px                      7.25
+    ours_pupilx_frame_to_frame_sd_px       0.76
+    ours_pupilx_lag1                       0.995
+    openiris_pupilx_sd_px                  13.86
+    openiris_pupilx_frame_to_frame_sd_px   13.61
+    openiris_pupilx_lag1                   0.517
+    n_ours                                 25261
+    n_openiris                             25005
+
+[Figure 3 - torsion comparison]
+    segment_shown                          35
+    frames_shown                           901
+    ours_torsion_sd_deg                    0.191
+    openiris_torsion_sd_deg                8.13
+    ours_lag1                              0.802
+    openiris_lag1                          0.057
+    within_segment_correlation             0.032
+    n_frames                               23950
+    n_segments                             118
+
+[Figure 4 - annulus occlusion]
+    frames_sampled                         [1000, 3000, 5000, 7000, 11000, 13000, 15000, 17000, 19000, 21000, 23000, 25000]
+    annulus_radii_px                       121-191
+    mean_iris_whole_annulus_pct            59.5
+    mean_iris_upper_sector_pct             24.2
+    mean_iris_lower_sector_pct             80.8
+    first_frame_pct                        69.5
+    last_frame_pct                         51.5
+
+[Figure 5 - gaze control]
+    horizontal_gaze_sd_deg                 1.06
+    vertical_gaze_sd_deg                   3.35
+    corr_h_v                               0.479
+    product_sd_deg2                        5.75
+    fitted_slope_deg_per_deg2              -0.00299
+    listing_prediction                     -0.00873
+    iris_diameter_px                       382.9
+    eyeball_radius_px                      393.0
+    n_frames                               25261
