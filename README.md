@@ -55,8 +55,9 @@ Run every command **from the project root** — all paths are relative to it.
 │   ├── analysis/       Listing's Law test
 │   └── review/         Streamlit app + OpenCV playback viewer
 ├── models/
-│   ├── best_model.pkl  RITnet checkpoint (third party, MIT — see notices)
-│   └── old.pkl         superseded
+│   └── best_model.pkl  RITnet checkpoint (third party, MIT — see notices)
+├── figures/
+│   └── make_figures.py generates every report figure from the outputs
 ├── data/               (git-ignored — reproducible, ~27 GB)
 │   ├── raw/            source videos 1–8.avi
 │   └── video_8/
