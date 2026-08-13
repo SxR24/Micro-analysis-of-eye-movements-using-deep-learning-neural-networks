@@ -154,12 +154,14 @@ ACKNOWLEDGEMENTS = [
     "redirected the analysis reported in Section 3.8.",
 
     "The RITnet model and its published weights are the work of Chaudhary and "
-    "colleagues and are used here under the MIT licence. The irisometry "
-    "approach follows the method of collaborators at the University of Applied "
-    "Sciences Upper Austria and Utrecht University; the implementation in this "
-    "repository was written independently and reproduces the purpose of the "
-    "original rather than its code. OpenIris is the work of Sadeghi and "
-    "colleagues at the University of California, Berkeley.",
+    "colleagues and are used here under the MIT licence. The torsion tracking "
+    "module began as a port of the MATLAB irisometry implementation shared by "
+    "collaborators at the University of Applied Sciences Upper Austria and "
+    "Utrecht University; the overall design, the pupil detection and blink "
+    "logic and the annulus split are theirs, while the reference anchoring, "
+    "mask gating, Procrustes estimator and reliability measure described in "
+    "Sections 2.6 and 2.8 were added for this project. OpenIris is the work of "
+    "Sadeghi and colleagues at the University of California, Berkeley.",
 
     "Generative AI (Anthropic Claude) was used during this project for code "
     "review, for debugging, and for drafting and editing sections of this "

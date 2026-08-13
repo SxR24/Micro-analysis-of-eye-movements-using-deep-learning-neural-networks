@@ -76,16 +76,27 @@ only.
 
 ## Irisometry — ocular torsion measurement
 
-`src/irisometry/ocular.py` is a reimplementation, not a copy. It follows the
-measurement approach of the MATLAB irisometry implementation in the
-Strauch/Naber lineage, obtained via collaborators at the University of Applied
-Sciences Upper Austria and Utrecht University, and reproduces its *purpose*
-(locate the pupil, quantify fit quality for blink detection, split iris features
-into inner and outer annuli) without reproducing its code.
+**`src/irisometry/ocular.py` is a derivative work.** It began as a port of the
+MATLAB irisometry implementation in the Strauch/Naber lineage, obtained via
+collaborators at the University of Applied Sciences Upper Austria and Utrecht
+University, and follows the structure and logic of that original. It is a
+translation into Python, not an independent reimplementation.
 
-The torsion derivation itself — centroid re-referencing followed by a robust
-rigid-rotation fit, segmented and re-referenced at every blink — is implemented
-here and is not taken from either original.
+Substantial parts have since been changed for this project, and those parts are
+original work: reference-anchored Lucas-Kanade tracking, feature gating by a
+segmentation mask, the orthogonal Procrustes rotation estimator with Tukey
+reweighting, sticky feature retirement, and the export of raw per-feature
+trajectories and a per-frame fit residual. The overall design, the pupil
+detection and blink logic, and the inner/outer annulus split derive from the
+original.
+
+**Licence status: unresolved.** The original was shared privately for research
+use and carries no licence grant that the author of this repository is aware of.
+No permission to redistribute a derivative work has been obtained in writing.
+Until that permission is confirmed by the original authors, this file should be
+treated as not licensed for redistribution, and anyone wishing to reuse it
+should contact them rather than relying on the LICENSE file at the root of this
+repository, which covers only original work.
 
 **Relevant literature:**
 

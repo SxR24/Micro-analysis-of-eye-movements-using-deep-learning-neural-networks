@@ -1,8 +1,20 @@
 """
 ocular_pipeline.py
 ======================================================================
-A single, clean-room Python pipeline for gaze + ocular-torsion estimation
-from eye videos. It consolidates:
+Gaze + ocular-torsion estimation from eye videos.
+
+PROVENANCE -- read before reusing or redistributing this file.
+This module began as a PORT of the MATLAB irisometry implementation in the
+Strauch/Naber lineage, shared privately by collaborators at the University of
+Applied Sciences Upper Austria and Utrecht University. It is a translation of
+that code, not an independent reimplementation, and it is therefore a
+derivative work. Its licence status is unresolved; see THIRD_PARTY_NOTICES.md.
+Substantial parts have since been rewritten for this project and are original
+(reference anchoring, mask gating, the Procrustes estimator, sticky feature
+retirement, the trajectory and residual export), but the overall design, the
+pupil detection and blink logic, and the annulus split come from the original.
+
+It consolidates:
 
   * the ORIGINAL MATLAB irissometry algorithm (Strauch/Naber lineage):
       - starburst-style pupil detection with a QUANTIFIED circle-fit error
