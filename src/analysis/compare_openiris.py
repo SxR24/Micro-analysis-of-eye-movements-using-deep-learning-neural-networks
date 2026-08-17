@@ -23,12 +23,23 @@ The two methods are genuinely independent:
 
 Nothing is shared between them except the video.
 
-TWO ARMS
---------
+FOUR ARMS
+---------
 1. PUPIL. Both estimate pupil centre and size. Deep-learning segmentation
    against classical blob detection with ellipse fitting. This arm works
    whether or not torsion does.
 2. TORSION. Both estimate rotation about the line of sight.
+3. BAND. A near-zero correlation between a smooth series and a noisy one does
+   not by itself show the noisy one carries no signal, since a buried
+   low-frequency signal would give the same result. The same low-pass filter is
+   applied to both traces across a range of cutoffs and the correlation
+   recomputed, which separates "measured badly" from "not measured".
+4. CONTROL. Agreement is also computed after averaging into progressively
+   longer blocks, for the pupil as well as for torsion. The pupil serves as an
+   internal control on frame pairing: if the two files were misaligned no
+   channel could agree, so pupil agreement that rises with averaging while
+   torsion agreement does not locates the failure in the torsion channel
+   rather than in the comparison itself.
 
 WHAT MUST BE HANDLED
 --------------------
@@ -98,7 +109,18 @@ def load_openiris(path, eye="Left", frame_w=None, frame_h=None):
         frame_w = out["oi_pupil_w"].max()
     fallback = np.isclose(out["oi_pupil_w"], frame_w, atol=1.0)
     zeros = (out["oi_pupil_x"] == 0) & (out["oi_pupil_y"] == 0)
-    out["oi_valid"] = ~(fallback | zeros) & out["oi_pupil_x"].notna()
+    # Plausibility bounds. Removing the frame-centre fallback is not enough:
+    # OpenIris also emits diverged ellipse fits with centres far outside the
+    # image (values beyond -260,000 px occur on this recording). A handful of
+    # those is sufficient to drag a Pearson correlation to near zero, so they
+    # must be excluded before any agreement statistic. These are the same
+    # bounds used to count usable pupils elsewhere, so the reported detection
+    # rate and the reported agreement refer to the same set of frames.
+    implausible = ~(out["oi_pupil_x"].between(200, 750)
+                    & out["oi_pupil_y"].between(150, 600)
+                    & out["oi_pupil_w"].between(120, 320))
+    out["oi_valid"] = (~(fallback | zeros | implausible)
+                       & out["oi_pupil_x"].notna())
     out.loc[~out["oi_valid"], ["oi_pupil_x", "oi_pupil_y",
                                "oi_pupil_w", "oi_torsion"]] = np.nan
     out["frame"] = out["frame"].astype("Int64")
@@ -132,6 +154,123 @@ def bland_altman(a, b):
     bias = float(np.nanmean(d))
     sd = float(np.nanstd(d))
     return bias, sd, bias - 1.96 * sd, bias + 1.96 * sd
+
+
+def lowpass(x, fc, fs=50.0, order=4):
+    """Zero-phase Butterworth low-pass.
+
+    filtfilt runs the filter forwards and backwards, so there is no phase lag
+    to confound a correlation between two series. The same filter is applied to
+    BOTH traces: filtering one and not the other would change their frequency
+    content relative to each other and the comparison would stop being
+    like-for-like.
+    """
+    from scipy.signal import butter, filtfilt
+    b, a = butter(order, fc / (fs / 2.0), btype="low")
+    return filtfilt(b, a, x)
+
+
+def filter_sweep(d, ours_col, oi_col, fs=50.0,
+                 cutoffs=(0.5, 1, 1.5, 2, 3, 4, 5, 7, 10, 15, 20, 24),
+                 min_len=40):
+    """Within-segment correlation as a function of low-pass cutoff.
+
+    WHY THIS TEST EXISTS
+    --------------------
+    A near-zero correlation between a smooth series and a noisy one does not by
+    itself show that the noisy one carries no signal. Real ocular torsion is a
+    low-frequency quantity; the eye cannot rotate torsionally at 25 Hz. If a
+    method were measuring torsion badly rather than not at all, its signal would
+    sit under high-frequency noise and a correlation computed across the whole
+    spectrum would be near zero either way.
+
+    Removing the noise band and correlating again separates the two cases. A
+    correlation that rises substantially means the signal was present and
+    buried; one that stays low means it was not there to begin with.
+    """
+    d = d[np.isfinite(d[ours_col]) & np.isfinite(d[oi_col])]
+    rows = []
+    for fc in cutoffs:
+        A, B = [], []
+        for _, g in d.groupby("segment"):
+            if len(g) < min_len:
+                continue
+            try:
+                a = lowpass(g[ours_col].values.astype(float), fc, fs)
+                b = lowpass(g[oi_col].values.astype(float), fc, fs)
+            except Exception:
+                continue
+            A.append(a - a.mean())
+            B.append(b - b.mean())
+        if not A:
+            continue
+        A, B = np.concatenate(A), np.concatenate(B)
+        rows.append(dict(cutoff_hz=fc, r=float(np.corrcoef(A, B)[0, 1]),
+                         n=len(A), sd_ours=float(A.std()), sd_oi=float(B.std())))
+    return pd.DataFrame(rows)
+
+
+def averaging_sweep(d, ours_col, oi_col, within_segment,
+                    windows=(1, 10, 25, 50, 100, 250)):
+    """Correlation after averaging into blocks of increasing length.
+
+    A second, filter-free way of asking the same question. Torsion must be
+    centred within segment because it is reset at every segment boundary; pupil
+    position must not be, since it is an absolute quantity that carries across
+    boundaries and centring it would discard most of its variance.
+    """
+    rows = []
+    for w in windows:
+        t = d.copy()
+        t["_blk"] = t["frame"] // w
+        keys = ["segment", "_blk"] if within_segment else ["_blk"]
+        g = t.groupby(keys).agg(a=(ours_col, "mean"), b=(oi_col, "mean"),
+                                n=("frame", "size"))
+        g = g[g["n"] >= max(1, w * 0.8)].dropna()
+        if len(g) < 30:
+            continue
+        if within_segment:
+            c = lambda v: v - v.groupby(level=0).transform("mean")
+            ga, gb = c(g["a"]), c(g["b"])
+        else:
+            ga, gb = g["a"], g["b"]
+        rows.append(dict(window_frames=w, window_s=w / 50.0,
+                         r=float(ga.corr(gb)), n=len(g)))
+    return pd.DataFrame(rows)
+
+
+def bootstrap_r(d, ours_col, oi_col, fc, fs=50.0, n_boot=2000, seed=0,
+                min_len=40):
+    """Segment-level bootstrap CI for the filtered correlation.
+
+    Whole segments are the independent unit; frames within one are heavily
+    autocorrelated and resampling them would give an absurdly tight interval.
+    """
+    d = d[np.isfinite(d[ours_col]) & np.isfinite(d[oi_col])]
+    segs = {}
+    for s, g in d.groupby("segment"):
+        if len(g) < min_len:
+            continue
+        try:
+            a = lowpass(g[ours_col].values.astype(float), fc, fs)
+            b = lowpass(g[oi_col].values.astype(float), fc, fs)
+        except Exception:
+            continue
+        segs[s] = (a - a.mean(), b - b.mean())
+    if len(segs) < 5:
+        return np.nan, np.nan, np.nan, 0
+    keys = list(segs)
+    rng = np.random.default_rng(seed)
+    out = np.empty(n_boot)
+    for i in range(n_boot):
+        pick = rng.integers(0, len(keys), len(keys))
+        A = np.concatenate([segs[keys[j]][0] for j in pick])
+        B = np.concatenate([segs[keys[j]][1] for j in pick])
+        out[i] = np.corrcoef(A, B)[0, 1]
+    A = np.concatenate([v[0] for v in segs.values()])
+    B = np.concatenate([v[1] for v in segs.values()])
+    lo, hi = np.percentile(out, [2.5, 97.5])
+    return float(np.corrcoef(A, B)[0, 1]), float(lo), float(hi), len(segs)
 
 
 def lag_profile(a, b, max_lag=10):
@@ -304,6 +443,63 @@ def main():
                 L.append("    torsion_resid_px as a confidence measure.")
                 L.append("")
 
+        # ---------------- arm 3: is the disagreement a band effect? ----------
+        L.append("-" * 72)
+        L.append("ARM 3 -- DOES THE DISAGREEMENT SURVIVE REMOVING THE NOISE BAND?")
+        L.append("-" * 72)
+        L.append("")
+        L.append("  A low correlation between a smooth series and a noisy one does not")
+        L.append("  on its own show the noisy one carries no signal. Torsion is a")
+        L.append("  low-frequency quantity, so a buried signal would give a low")
+        L.append("  correlation across the whole spectrum either way. The same")
+        L.append("  low-pass filter is applied to BOTH traces and the correlation")
+        L.append("  recomputed.")
+        L.append("")
+        sw = filter_sweep(t, args.torsion_col, "oi_torsion")
+        if len(sw):
+            L.append("  %-11s %8s %10s %12s %10s"
+                     % ("cutoff Hz", "r", "n frames", "SD ours deg", "SD OI deg"))
+            L.append("  " + "-" * 55)
+            for _, r_ in sw.iterrows():
+                L.append("  %-11.1f %+8.3f %10d %12.3f %10.3f"
+                         % (r_.cutoff_hz, r_.r, r_.n, r_.sd_ours, r_.sd_oi))
+            sw_ok = sw[np.isfinite(sw["r"])]
+            best = sw_ok.loc[sw_ok["r"].abs().idxmax()] if len(sw_ok) else None
+        if len(sw) and best is not None:
+            rb, lo_b, hi_b, nseg_b = bootstrap_r(
+                t, args.torsion_col, "oi_torsion", float(best.cutoff_hz))
+            L.append("")
+            L.append("  peak at %.1f Hz: r = %+.3f, 95%% CI [%+.3f, %+.3f] over %d segments"
+                     % (best.cutoff_hz, rb, lo_b, hi_b, nseg_b))
+            L.append("  shared variance at the peak: %.1f%%" % (100 * rb ** 2))
+            L.append("  SD ratio at the peak: OpenIris / ours = %.0fx"
+                     % (best.sd_oi / best.sd_ours if best.sd_ours else np.nan))
+            L.append("")
+
+        # arm 4: the pupil channel as an internal control on frame pairing
+        L.append("  PUPIL AS AN INTERNAL CONTROL")
+        L.append("  If the two files were misaligned, no channel would agree. Pupil")
+        L.append("  position is absolute and carries across segment boundaries, so it")
+        L.append("  is pooled over the whole recording; torsion is reset at every")
+        L.append("  boundary and must be centred within segment.")
+        L.append("")
+        pu = averaging_sweep(b, "pupil_y", "oi_pupil_y", within_segment=False)
+        to = averaging_sweep(t, args.torsion_col, "oi_torsion", within_segment=True)
+        merged = pu.merge(to, on="window_frames", how="outer",
+                          suffixes=("_pupil", "_torsion")).sort_values("window_frames")
+        L.append("  %-16s %12s %12s" % ("window", "pupil r", "torsion r"))
+        L.append("  " + "-" * 42)
+        for _, r_ in merged.iterrows():
+            wp = "%d fr (%.1f s)" % (r_.window_frames, r_.window_frames / 50.0)
+            fp = ("%+.3f" % r_.r_pupil) if pd.notna(r_.get("r_pupil")) else "   --"
+            ft = ("%+.3f" % r_.r_torsion) if pd.notna(r_.get("r_torsion")) else "   --"
+            L.append("  %-16s %12s %12s" % (wp, fp, ft))
+        L.append("")
+        L.append("  Pupil agreement rising with averaging while torsion does not is")
+        L.append("  evidence that the frames are correctly paired and that the")
+        L.append("  failure is specific to the torsion channel.")
+        L.append("")
+
         L.append("  INTERPRETATION")
         if abs(r) > 0.5:
             L.append("    The two methods agree substantially. Since they share")
@@ -313,10 +509,17 @@ def main():
             L.append("    Modest agreement. Both may be partly tracking torsion")
             L.append("    with substantial independent noise.")
         else:
-            L.append("    No meaningful agreement. Check each trace's own")
-            L.append("    autocorrelation above: if one is noise-like, the")
-            L.append("    disagreement is attributable to that method rather")
-            L.append("    than to a genuine conflict between measurements.")
+            L.append("    No meaningful agreement on torsion. Three things above")
+            L.append("    bear on how that should be read:")
+            L.append("      - each trace's own lag-1 autocorrelation, which says")
+            L.append("        whether either is self-consistent at all;")
+            L.append("      - the filter sweep, which says whether agreement")
+            L.append("        appears once the noise band is removed;")
+            L.append("      - the pupil control, which says whether the frames")
+            L.append("        are paired correctly in the first place.")
+            L.append("    Agreement on the pupil channel alongside disagreement on")
+            L.append("    torsion locates the failure in the torsion measurement")
+            L.append("    rather than in the alignment or the configuration.")
         L.append("")
 
     txt = "\n".join(L)

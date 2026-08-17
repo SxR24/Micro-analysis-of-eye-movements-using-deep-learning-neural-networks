@@ -50,6 +50,8 @@ plt.rcParams.update({
     "savefig.bbox": "tight",
 })
 
+FPS = 50.0              # frame rate of the recording analysed here
+
 C_OURS = "#1f4e79"      # this pipeline
 C_OPEN = "#c1543a"      # OpenIris
 C_BASE = "#8c8c8c"      # superseded baseline
@@ -293,29 +295,103 @@ def fig3(oi_path):
     big = t.groupby("segment").size().idxmax()
     S = t[t["segment"] == big]
 
-    fig, ax = plt.subplots(1, 3, figsize=(9.2, 2.9))
+    # ---- low-pass sweep: the same filter on BOTH traces ----------------
+    # Filtering one series and not the other would change their frequency
+    # content relative to each other, so the comparison would stop being
+    # like-for-like. filtfilt is zero-phase, so no lag is introduced.
+    from scipy.signal import butter, filtfilt
 
-    a = ax[0]
-    a.plot(S["time"], S["ours_c"], lw=.8, color=C_OURS)
+    def lp(x, fc, order=4):
+        b, a_ = butter(order, fc / (FPS / 2.0), btype="low")
+        return filtfilt(b, a_, x)
+
+    cutoffs = np.array([0.5, 1, 1.5, 2, 3, 4, 5, 7, 10, 15, 20, 24])
+    sweep = []
+    for fc in cutoffs:
+        A, B = [], []
+        for _, g in t.groupby("segment"):
+            if len(g) < 40:
+                continue
+            try:
+                a_ = lp(g["ours_c"].values.astype(float), fc)
+                b_ = lp(g["oi_c"].values.astype(float), fc)
+            except Exception:
+                continue
+            A.append(a_ - a_.mean()); B.append(b_ - b_.mean())
+        A, B = np.concatenate(A), np.concatenate(B)
+        sweep.append(float(np.corrcoef(A, B)[0, 1]))
+    sweep = np.array(sweep)
+    fc_best = float(cutoffs[np.nanargmax(np.abs(sweep))])
+    r_best = float(sweep[np.nanargmax(np.abs(sweep))])
+
+    # ---- averaging sweep, with the pupil channel as the control --------
+    # Pupil position is absolute and carries across segment boundaries, so it
+    # is pooled over the whole recording. Torsion is reset at every boundary
+    # and must be centred within segment.
+    wins = [1, 10, 25, 50, 100, 250]
+    r_pupil, r_tors = [], []
+    mp = m[m["ok"] & m["oi_ok"]].dropna(subset=["pupil_y", "py"])
+    for w in wins:
+        g = mp.assign(blk=mp["frame"] // w).groupby("blk").agg(
+            a=("pupil_y", "mean"), b=("py", "mean"), n=("frame", "size"))
+        g = g[g["n"] >= max(1, w * 0.8)].dropna()
+        r_pupil.append(float(g["a"].corr(g["b"])) if len(g) > 30 else np.nan)
+
+        h = t.assign(blk=t["frame"] // w).groupby(["segment", "blk"]).agg(
+            a=("ours_c", "mean"), b=("oi_c", "mean"), n=("frame", "size"))
+        h = h[h["n"] >= max(1, w * 0.8)].dropna()
+        if len(h) > 30:
+            c_ = lambda v: v - v.groupby(level=0).transform("mean")
+            r_tors.append(float(c_(h["a"]).corr(c_(h["b"]))))
+        else:
+            r_tors.append(np.nan)
+
+    fig, ax = plt.subplots(2, 2, figsize=(9.2, 6.0))
+
+    # (a) both traces on ONE axis, so the difference in scale is visible
+    a = ax[0, 0]
+    a.plot(S["time"], S["oi_c"], lw=.7, color=C_OPEN, alpha=.9, label="OpenIris")
+    a.plot(S["time"], S["ours_c"], lw=1.0, color=C_OURS, label="this pipeline")
     a.set_xlabel("time (s)"); a.set_ylabel("torsion (deg)")
-    a.set_title("This pipeline\nsegment %d, %d frames" % (big, len(S)))
+    a.set_title("Same axis, segment %d (%d frames)" % (big, len(S)))
+    a.legend(frameon=False, fontsize=7)
 
-    a = ax[1]
-    a.plot(S["time"], S["oi_c"], lw=.8, color=C_OPEN)
-    a.set_xlabel("time (s)"); a.set_ylabel("torsion (deg)")
-    a.set_title("OpenIris, same frames")
-
-    a = ax[2]
+    # (b) temporal structure
+    a = ax[0, 1]
     lags = np.arange(1, 16)
     a.plot(lags, [t["ours_c"].autocorr(l) for l in lags], "s-", color=C_OURS,
            ms=3, label="this pipeline")
     a.plot(lags, [t["oi_c"].autocorr(l) for l in lags], "o-", color=C_OPEN,
            ms=3, label="OpenIris")
-    a.axhline(0, color="k", lw=.6)
-    a.set_ylim(-0.1, 1.05)
+    a.axhline(0, color="k", lw=.6); a.set_ylim(-0.1, 1.05)
     a.set_xlabel("lag (frames)"); a.set_ylabel("autocorrelation")
     a.set_title("Torsion temporal structure")
-    a.legend(frameon=False)
+    a.legend(frameon=False, fontsize=7)
+
+    # (c) does agreement appear once the noise band is removed?
+    a = ax[1, 0]
+    a.semilogx(cutoffs, sweep, "o-", color=C_ACC, ms=4)
+    a.axhline(0, color="k", lw=.6)
+    a.plot([fc_best], [r_best], "o", ms=9, mfc="none", mec=C_OPEN, mew=1.5)
+    a.annotate("peak %.2f Hz\nr = %+.3f" % (fc_best, r_best),
+               xy=(fc_best, r_best), xytext=(3, -30),
+               textcoords="offset points", fontsize=7)
+    a.set_xlabel("low-pass cutoff (Hz), same filter on both")
+    a.set_ylabel("within-segment correlation")
+    a.set_title("Agreement vs frequency band")
+    a.set_ylim(min(-0.02, sweep.min() - .02), max(0.2, sweep.max() + .05))
+
+    # (d) pupil as an internal control on frame pairing
+    a = ax[1, 1]
+    xs = np.array(wins) / FPS
+    a.semilogx(xs, r_pupil, "s-", color=C_ACC, ms=4, label="pupil (control)")
+    a.semilogx(xs, r_tors, "o-", color=C_OPEN, ms=4, label="torsion")
+    a.axhline(0, color="k", lw=.6)
+    a.set_xlabel("averaging window (s)")
+    a.set_ylabel("correlation with OpenIris")
+    a.set_title("Pupil agrees, torsion does not")
+    a.legend(frameon=False, fontsize=7, loc="center right")
+    a.set_ylim(-0.05, 1.05)
 
     fig.tight_layout()
     save(fig, "fig3_torsion_comparison")
@@ -326,6 +402,12 @@ def fig3(oi_path):
         ours_lag1=round(float(t["ours_c"].autocorr(1)), 3),
         openiris_lag1=round(float(t["oi_c"].autocorr(1)), 3),
         within_segment_correlation=round(float(t["ours_c"].corr(t["oi_c"])), 3),
+        lowpass_cutoffs_hz=list(cutoffs),
+        lowpass_correlations=[round(v, 3) for v in sweep],
+        lowpass_peak_hz=fc_best, lowpass_peak_r=round(r_best, 3),
+        averaging_windows_s=[round(w / FPS, 2) for w in wins],
+        pupil_r_by_window=[round(v, 3) for v in r_pupil],
+        torsion_r_by_window=[round(v, 3) for v in r_tors],
         n_frames=len(t), n_segments=int(t["segment"].nunique()))
 
 

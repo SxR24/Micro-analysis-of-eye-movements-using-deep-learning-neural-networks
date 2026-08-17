@@ -32,6 +32,13 @@ OpenIris session: 8-PostProc-2026Aug12-181707.txt
     ours_lag1                              0.802
     openiris_lag1                          0.057
     within_segment_correlation             0.032
+    lowpass_cutoffs_hz                     [np.float64(0.5), np.float64(1.0), np.float64(1.5), np.float64(2.0), np.float64(3.0), np.float64(4.0), np.float64(5.0), np.float64(7.0), np.float64(10.0), np.float64(15.0), np.float64(20.0), np.float64(24.0)]
+    lowpass_correlations                   [np.float64(0.084), np.float64(0.091), np.float64(0.101), np.float64(0.097), np.float64(0.087), np.float64(0.078), np.float64(0.071), np.float64(0.061), np.float64(0.051), np.float64(0.042), np.float64(0.036), np.float64(0.032)]
+    lowpass_peak_hz                        1.5
+    lowpass_peak_r                         0.101
+    averaging_windows_s                    [0.02, 0.2, 0.5, 1.0, 2.0, 5.0]
+    pupil_r_by_window                      [0.724, 0.935, 0.959, 0.968, 0.973, 0.981]
+    torsion_r_by_window                    [0.032, 0.111, 0.16, 0.141, 0.163, 0.364]
     n_frames                               23950
     n_segments                             118
 

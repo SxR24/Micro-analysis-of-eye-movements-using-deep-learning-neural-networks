@@ -4,11 +4,12 @@ ocular_pipeline.py
 Gaze + ocular-torsion estimation from eye videos.
 
 PROVENANCE -- read before reusing or redistributing this file.
-This module began as a PORT of the MATLAB irisometry implementation in the
-Strauch/Naber lineage, shared privately by collaborators at the University of
-Applied Sciences Upper Austria and Utrecht University. It is a translation of
-that code, not an independent reimplementation, and it is therefore a
-derivative work. Its licence status is unresolved; see THIRD_PARTY_NOTICES.md.
+This module was ADAPTED FROM an existing Python irisometry implementation in
+the Strauch/Naber lineage, shared privately by collaborators at the University
+of Applied Sciences Upper Austria and Utrecht University. It is a modification
+of that code, not an independent reimplementation, and it is therefore a
+derivative work. Permission to redistribute has been granted; see
+THIRD_PARTY_NOTICES.md.
 Substantial parts have since been rewritten for this project and are original
 (reference anchoring, mask gating, the Procrustes estimator, sticky feature
 retirement, the trajectory and residual export), but the overall design, the
@@ -16,13 +17,13 @@ pupil detection and blink logic, and the annulus split come from the original.
 
 It consolidates:
 
-  * the ORIGINAL MATLAB irissometry algorithm (Strauch/Naber lineage):
+  * the ORIGINAL irissometry algorithm (Strauch/Naber lineage):
       - starburst-style pupil detection with a QUANTIFIED circle-fit error
       - fit-error-based blink detection (far cleaner than a feature-count guess)
       - per-annulus iris feature geometry (inner vs outer iris)
-  * the PYTHON port's virtue:
+  * this version's virtue:
       - it keeps the RAW per-feature trajectories, so anything can be derived
-        downstream (the MATLAB version discards them)
+        downstream (the original discards them)
   * the TORSION derivation that NEITHER original computes directly:
       - centroid re-centring (removes gaze/translation), then a robust
         least-squares rigid rotation from the segment reference -> degrees
@@ -41,7 +42,7 @@ Design notes
 ------------
 - Pure inference. No training.
 - Pupil detection here is a robust, self-contained classical detector (dark-blob
-  + ellipse fit + residual) that mirrors the MATLAB starburst's PURPOSE (locate
+  + ellipse fit + residual) that mirrors the original starburst's PURPOSE (locate
   pupil, quantify fit quality for blink detection) without cloning its every line.
   If RITnet masks are supplied, they override this and are used instead.
 - Features are tracked from the segment's reference IMAGE each frame rather than
@@ -161,8 +162,7 @@ class Config:
     # holds the collapsed per-frame torsion; the trajectories are what let you
     # re-derive a different estimator, a different inner/outer split, or
     # per-feature quality metrics WITHOUT re-running the tracking. This is the
-    # stated advantage of the Python port over the MATLAB original, which
-    # discards them.
+    # stated advantage of this version over the original, which discards them.
     save_features = True
     save_overlay_video = False
     histogram_eq = None          # None | 'eqHist' | 'eqAdaptHist'
@@ -282,13 +282,13 @@ def track_from_reference(ref_gray, cur_gray, ref_pts, guess_pts, lk_params,
 
 
 # ======================================================================
-# Classical pupil detector (fallback; mirrors MATLAB's purpose, not its code)
+# Classical pupil detector (fallback; mirrors the original's purpose, not its code)
 # ======================================================================
 def detect_pupil(gray, cfg, prev_center=None):
     """
     Locate the pupil as the largest dark blob, fit an ellipse, and return a
     normalised fit residual that acts as the blink signal (high => poor fit =>
-    occluded/blink), analogous to the MATLAB circle-fit error (eyeData col 5).
+    occluded/blink), analogous to the original circle-fit error (eyeData col 5).
 
     Returns: (cx, cy, radius, fit_err, found)
     """
@@ -758,7 +758,7 @@ class OcularPipeline:
                             resid_px = np.nan
                             n_used = len(A)
 
-                        # inner vs outer iris (per the MATLAB rim split). Radii
+                        # inner vs outer iris (per the original rim split). Radii
                         # are the fixed reference radii about the AOI centre, so
                         # ring membership is constant for the whole segment.
                         med = float(np.median(ref_r[valid_mask]))

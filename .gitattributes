@@ -1,0 +1,25 @@
+# Line-ending policy.
+#
+# Without this, every text file edited on Windows shows as wholly rewritten
+# because the working copy uses CRLF while the repository stores LF. The diffs
+# are then useless: 1,639 insertions against 1,639 deletions with no actual
+# change. Normalising to LF in the repository fixes that; Git still checks out
+# CRLF locally where the platform expects it.
+
+* text=auto eol=lf
+
+# Batch files must keep CRLF. cmd.exe mis-parses multi-line constructs when a
+# .bat file has Unix line endings.
+*.bat text eol=crlf
+
+# Binary: never touched, never diffed as text.
+*.png binary
+*.jpg binary
+*.pdf binary
+*.pkl binary
+*.npz binary
+*.avi binary
+*.docx binary
+
+# SVG is text and benefits from diffing.
+*.svg text eol=lf
